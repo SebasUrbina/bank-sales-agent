@@ -1,7 +1,7 @@
 .PHONY: dev test lint
 
 dev:
-	uv run uvicorn bank_sales_agent.infrastructure.api.app:create_app --factory --reload
+	uv run uvicorn bank_sales_agent.main:app --reload
 
 test:
 	uv run pytest
@@ -9,4 +9,3 @@ test:
 lint:
 	uv run ruff check src tests
 	uv run mypy src
-

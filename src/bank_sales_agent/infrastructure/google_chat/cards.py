@@ -5,7 +5,7 @@ from bank_sales_agent.application.artifacts import (
     Customer360Artifact,
     PrioritizedCustomersArtifact,
 )
-from bank_sales_agent.application.dto import OutboundMessage
+from bank_sales_agent.application.dto import AgentResult
 from bank_sales_agent.domain.models import Customer360, PrioritizedCustomer
 from bank_sales_agent.infrastructure.google_chat.models import (
     GoogleChatCard,
@@ -78,8 +78,8 @@ def render_artifact(artifact: AgentArtifact) -> GoogleChatCardV2:
 
 
 class GoogleChatArtifactRenderer:
-    def render(self, message: OutboundMessage) -> GoogleChatMessage:
+    def render(self, result: AgentResult) -> GoogleChatMessage:
         return GoogleChatMessage(
-            text=message.text,
-            cards=tuple(render_artifact(artifact) for artifact in message.artifacts),
+            text=result.text,
+            cards=tuple(render_artifact(artifact) for artifact in result.artifacts),
         )

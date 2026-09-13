@@ -18,27 +18,18 @@ class AgentInvocation:
     principal: Principal
     message: str
     thread_id: str
+    attachments: tuple["InboundAttachment", ...] = ()
+
+
+@dataclass(frozen=True)
+class InboundAttachment:
+    resource_name: str
+    file_name: str
+    mime_type: str
+    download_uri: str | None = None
 
 
 @dataclass(frozen=True)
 class AgentResult:
     text: str
     artifacts: tuple[AgentArtifact, ...]
-
-
-@dataclass(frozen=True)
-class ChannelDestination:
-    space_name: str
-    thread_name: str | None = None
-
-
-@dataclass(frozen=True)
-class OutboundMessage:
-    text: str
-    artifacts: tuple[AgentArtifact, ...] = ()
-
-
-@dataclass(frozen=True)
-class ProcessAgentRequestCommand:
-    invocation: AgentInvocation
-    destination: ChannelDestination

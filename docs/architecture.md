@@ -1,7 +1,7 @@
 # Arquitectura
 
 ```text
-Google Chat / REST
+Apps Script / REST
        |
        v
 infrastructure/api  -- autentica identidad, crea AgentContext
@@ -25,16 +25,13 @@ domain                   SQL parametrizado y fijo
 interaction event
       |
       v
-FastAPI -- BackgroundTasks.add_task(...) -- respuesta inmediata "Procesando..."
+FastAPI -- BackgroundTasks.add_task(...) -- respuesta inmediata 202 Accepted
                     |
                     v
-          ProcessAgentRequest
+          Background worker API
                    |
                    v
               AgentRunner
-                   |
-                   v
-          ChannelPublisher port
                    |
                    v
      GoogleChatPublisher + renderer
@@ -44,8 +41,8 @@ FastAPI -- BackgroundTasks.add_task(...) -- respuesta inmediata "Procesando..."
 ```
 
 `BackgroundTasks` es deliberadamente una implementación simple y best effort: una tarea puede
-perderse si el proceso termina después del acuse. Los ports `AgentRunner` y `ChannelPublisher`
-permiten introducir posteriormente una cola durable sin modificar el agente.
+perderse si el proceso termina después del acuse. El port `AgentRunner` permite introducir
+posteriormente una cola durable sin modificar el agente.
 
 ## Decisiones clave
 
@@ -64,16 +61,18 @@ permiten introducir posteriormente una cola durable sin modificar el agente.
    objetos `GoogleChatCardV2`. Las dataclasses usan `build()` únicamente en el borde para producir
    el JSON `cardsV2` esperado por Google.
 5. **El lifespan posee los recursos.** En producción crea una conexión/pool Databricks al iniciar y
-   lo cierra al apagar. Nada abre conexiones por invocación ni usa singletons implícitos.
-6. **LangChain recibe el `thread_id` canónico sin transformaciones.** En Google Chat se usa el
-   `space_name` recibido, que en este contrato ya es único para el usuario. `thread.name` se conserva
-   por separado para publicar visualmente en el hilo original.
+   lo cierra al apagar. También crea y cierra el checkpointer correspondiente al ambiente. Nada
+   abre conexiones por invocación ni usa singletons implícitos.
+6. **LangChain recibe el hilo canónico sin transformaciones.** El `thread_name` normalizado por Apps
+   Script se utiliza como `thread_id` y también para publicar en el hilo original de Google Chat.
 7. **Google Chat recibe una sola respuesta final.** El endpoint acusa recibo antes de 30 segundos;
    el background task espera `ainvoke`, reúne texto y artifacts, renderiza una sola respuesta y la
    publica con `requestId` idempotente en el `thread.name` original.
 8. **Los errores de tools son observaciones seguras.** `DomainError` define un `code` y si el modelo
    puede reintentar. El middleware devuelve un `ToolMessage(status="error")` en JSON. Los errores
    inesperados se registran con detalle, pero el modelo solo recibe un mensaje genérico.
+9. **Los checkpoints están aislados por ambiente.** `local` usa `InMemorySaver`; `dsr`, `qa` y `prd`
+   usan `MongoDBSaver` y bases distintas con el patrón `{MONGODB_DATABASE}_{APP_ENV}`.
 
 ## Cómo agregar una capacidad
 

@@ -22,7 +22,10 @@ def build_customer_portfolio_tools(
         executive_email: Annotated[
             str | None, "Email del ejecutivo; solo para lideres o admins"
         ] = None,
-    ) -> tuple[str, AgentArtifact]:
+        render: Annotated[
+            bool, "True para mostrar este resultado como card en Google Chat"
+        ] = False,
+    ) -> tuple[str, AgentArtifact | None]:
         """Lista clientes priorizados dentro de la cartera autorizada del usuario."""
         result = list(
             await list_customers.execute(
@@ -31,6 +34,7 @@ def build_customer_portfolio_tools(
             )
         )
         content = json.dumps([asdict(item) for item in result], ensure_ascii=False)
-        return content, PrioritizedCustomersArtifact(tuple(result))
+        artifact = PrioritizedCustomersArtifact(tuple(result)) if render else None
+        return content, artifact
 
     return [list_prioritized_customers]

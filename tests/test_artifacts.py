@@ -28,6 +28,11 @@ def test_collects_native_tool_message_artifacts() -> None:
     assert collect_artifacts(messages) == (artifact,)
 
 
+def test_ignores_tool_messages_without_renderable_artifact() -> None:
+    messages = [ToolMessage(content="sólo para el modelo", tool_call_id="call-1")]
+    assert collect_artifacts(messages) == ()
+
+
 def test_google_chat_renderer_maps_customer_360() -> None:
     card = render_artifact(Customer360Artifact(customer())).build()
     assert card["cardId"] == "customer-11111111-1"

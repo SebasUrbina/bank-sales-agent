@@ -4,9 +4,7 @@ from typing import Protocol
 from bank_sales_agent.application.dto import (
     AgentInvocation,
     AgentResult,
-    ChannelDestination,
     ListCustomersQuery,
-    OutboundMessage,
 )
 from bank_sales_agent.domain.models import (
     Customer360,
@@ -22,15 +20,6 @@ class EmployeeDirectoryRepository(Protocol):
 
 class AgentRunner(Protocol):
     async def run(self, invocation: AgentInvocation) -> AgentResult: ...
-
-
-class ChannelPublisher(Protocol):
-    async def publish(
-        self,
-        destination: ChannelDestination,
-        message: OutboundMessage,
-        idempotency_key: str,
-    ) -> None: ...
 
 
 class CustomerInsightsRepository(Protocol):

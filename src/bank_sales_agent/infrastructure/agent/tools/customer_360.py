@@ -14,10 +14,14 @@ def build_customer_360_tools(get_customer_360: GetCustomer360) -> list[BaseTool]
     async def customer_360(
         rut: Annotated[str, "RUT chileno del cliente, con digito verificador"],
         runtime: ToolRuntime[AgentContext],
-    ) -> tuple[str, AgentArtifact]:
+        render: Annotated[
+            bool, "True para mostrar este resultado como card en Google Chat"
+        ] = False,
+    ) -> tuple[str, AgentArtifact | None]:
         """Obtiene la vista consolidada 360 de un cliente autorizado."""
         result = await get_customer_360.execute(runtime.context.principal, rut)
         content = json.dumps(asdict(result), ensure_ascii=False, default=str)
-        return content, Customer360Artifact(result)
+        artifact = Customer360Artifact(result) if render else None
+        return content, artifact
 
     return [customer_360]

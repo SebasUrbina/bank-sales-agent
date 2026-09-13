@@ -1,4 +1,4 @@
-from bank_sales_agent.application.dto import ChannelDestination, OutboundMessage
+from bank_sales_agent.application.dto import AgentResult
 from bank_sales_agent.infrastructure.google_chat.cards import GoogleChatArtifactRenderer
 from bank_sales_agent.infrastructure.google_chat.client import GoogleChatClient
 
@@ -10,14 +10,17 @@ class GoogleChatPublisher:
 
     async def publish(
         self,
-        destination: ChannelDestination,
-        message: OutboundMessage,
-        idempotency_key: str,
+        result: AgentResult,
+        space_name: str,
+        thread_name: str,
+        oauth_token: str,
+        request_id: str,
     ) -> None:
-        google_message = self._renderer.render(message)
+        google_message = self._renderer.render(result)
         await self._client.create_message(
-            space_name=destination.space_name,
+            space_name=space_name,
             body=google_message.build(),
-            request_id=idempotency_key,
-            thread_name=destination.thread_name,
+            request_id=request_id,
+            thread_name=thread_name,
+            oauth_token=oauth_token,
         )

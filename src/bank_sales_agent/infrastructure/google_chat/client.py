@@ -41,18 +41,20 @@ class GoogleChatClient(Protocol):
         body: dict[str, Any],
         request_id: str,
         thread_name: str | None = None,
+        oauth_token: str | None = None,
     ) -> dict[str, Any]: ...
 
 
 class GoogleChatApiClient:
     BASE_URL = "https://chat.googleapis.com/v1"
 
-    def __init__(self, tokens: AccessTokenProvider) -> None:
+    def __init__(self, tokens: AccessTokenProvider, timeout_seconds: float = 20.0) -> None:
         self._tokens = tokens
+        self._timeout_seconds = timeout_seconds
         self._http: httpx.AsyncClient | None = None
 
     async def connect(self) -> None:
-        self._http = httpx.AsyncClient(timeout=httpx.Timeout(20.0))
+        self._http = httpx.AsyncClient(timeout=httpx.Timeout(self._timeout_seconds))
 
     async def close(self) -> None:
         if self._http is not None:
@@ -65,6 +67,7 @@ class GoogleChatApiClient:
         body: dict[str, Any],
         request_id: str,
         thread_name: str | None = None,
+        oauth_token: str | None = None,
     ) -> dict[str, Any]:
         if self._http is None:
             raise RuntimeError("Google Chat client is not connected")
@@ -74,10 +77,11 @@ class GoogleChatApiClient:
         parameters = {"requestId": request_id}
         if thread_name:
             parameters["messageReplyOption"] = "REPLY_MESSAGE_OR_FAIL"
+        access_token = oauth_token or await self._tokens.token()
         response = await self._http.post(
             f"{self.BASE_URL}/{space_name}/messages",
             params=parameters,
-            headers={"Authorization": f"Bearer {await self._tokens.token()}"},
+            headers={"Authorization": f"Bearer {access_token}"},
             json=payload,
         )
         response.raise_for_status()
@@ -100,6 +104,7 @@ class MockGoogleChatClient:
         body: dict[str, Any],
         request_id: str,
         thread_name: str | None = None,
+        oauth_token: str | None = None,
     ) -> dict[str, Any]:
         record = {
             "space_name": space_name,
