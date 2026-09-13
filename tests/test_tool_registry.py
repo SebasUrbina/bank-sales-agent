@@ -1,0 +1,31 @@
+import pytest
+from langchain.tools import tool
+
+from bank_sales_agent.domain.models import Principal, Role
+from bank_sales_agent.infrastructure.agent.tools.registry import ToolRegistry
+
+
+@tool
+def customer_360(rut: str) -> str:
+    """Mock de vista 360."""
+    return rut
+
+
+@tool
+def list_prioritized_customers(limit: int = 10) -> str:
+    """Mock de clientes priorizados."""
+    return str(limit)
+
+
+def test_registry_returns_tools_visible_for_principal() -> None:
+    registry = ToolRegistry([customer_360, list_prioritized_customers])
+    principal = Principal("user@bank.test", Role.COMMERCIAL)
+    assert {item.name for item in registry.for_principal(principal)} == {
+        "customer_360",
+        "list_prioritized_customers",
+    }
+
+
+def test_registry_fails_fast_when_catalog_and_tools_diverge() -> None:
+    with pytest.raises(ValueError, match="missing"):
+        ToolRegistry([customer_360])
