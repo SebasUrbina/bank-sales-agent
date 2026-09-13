@@ -6,6 +6,10 @@ from langchain_core.messages.base import BaseMessage
 from bank_sales_agent.application.artifacts import AgentArtifact
 from bank_sales_agent.application.dto import AgentInvocation, AgentResult
 from bank_sales_agent.infrastructure.agent.context import AgentContext
+from bank_sales_agent.infrastructure.databricks.client import (
+    ScopedSqlWarehouseClient,
+    SqlWarehouseClient,
+)
 
 
 def _last_text(messages: list[BaseMessage]) -> str:
@@ -24,8 +28,9 @@ def collect_artifacts(messages: list[BaseMessage]) -> tuple[AgentArtifact, ...]:
 
 
 class LangChainAgentRunner:
-    def __init__(self, agent: Any) -> None:
+    def __init__(self, agent: Any, sql_client: SqlWarehouseClient) -> None:
         self._agent = agent
+        self._sql_client = sql_client
 
     async def run(self, invocation: AgentInvocation) -> AgentResult:
         result = await self._agent.ainvoke(
@@ -37,7 +42,14 @@ class LangChainAgentRunner:
                     },
                 ]
             },
-            context=AgentContext(invocation.principal, invocation.request_id),
+            context=AgentContext(
+                principal=invocation.principal,
+                request_id=invocation.request_id,
+                sql_client=ScopedSqlWarehouseClient(
+                    self._sql_client,
+                    invocation.principal,
+                ),
+            ),
             config={
                 "configurable": {
                     "thread_id": invocation.thread_id,

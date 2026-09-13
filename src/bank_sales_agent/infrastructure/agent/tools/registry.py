@@ -3,12 +3,10 @@ from collections.abc import Iterable
 from langchain.tools import BaseTool
 
 from bank_sales_agent.application.agent.catalog import TOOL_CATALOG, visible_tool_names
-from bank_sales_agent.application.use_cases.customer_360 import GetCustomer360
-from bank_sales_agent.application.use_cases.list_customers import ListPrioritizedCustomers
 from bank_sales_agent.domain.models import Principal
-from bank_sales_agent.infrastructure.agent.tools.customer_360 import build_customer_360_tools
+from bank_sales_agent.infrastructure.agent.tools.customer_360 import customer_360
 from bank_sales_agent.infrastructure.agent.tools.customer_portfolio import (
-    build_customer_portfolio_tools,
+    list_prioritized_customers,
 )
 
 
@@ -32,13 +30,5 @@ class ToolRegistry:
         return [tool for name, tool in self._by_name.items() if name in visible]
 
 
-def build_tool_registry(
-    get_customer_360: GetCustomer360,
-    list_customers: ListPrioritizedCustomers,
-) -> ToolRegistry:
-    return ToolRegistry(
-        [
-            *build_customer_360_tools(get_customer_360),
-            *build_customer_portfolio_tools(list_customers),
-        ]
-    )
+def build_tool_registry() -> ToolRegistry:
+    return ToolRegistry([customer_360, list_prioritized_customers])

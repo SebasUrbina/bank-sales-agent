@@ -8,15 +8,12 @@ infrastructure/api  -- autentica identidad, crea AgentContext
        |
        v
 infrastructure/agent -- create_agent + middleware harness + tools
-       |
-       v
-application/use_cases -- autoriza capacidad y crea DataAccessContext
-       |
-       v
-application/ports <--- infrastructure/databricks
-       |                         |
-       v                         v
-domain                   SQL parametrizado y fijo
+       |                             |
+       v                             v
+domain policies             ScopedSqlWarehouseClient
+                                      |
+                                      v
+                            SQL parametrizado y fijo
 ```
 
 ## Flujo asíncrono de Google Chat
@@ -49,10 +46,10 @@ posteriormente una cola durable sin modificar el agente.
 1. **El email es la llave corporativa.** `user_email` se resuelve en el directorio para obtener su
    rol y se conserva como llave del `Principal`; no existe un `employee_id` alternativo.
 2. **No existe una tool de SQL genérico.** Cada capacidad tiene un query estable, revisable y
-   parametrizado. Los joins viven en `query_catalog.py` o, cuando crezcan, en vistas Gold de
-   Databricks.
+   parametrizado junto a su tool. Una query muy extensa puede moverse a un archivo `.sql` vecino;
+   los joins reutilizados o costosos deben evolucionar a vistas Gold de Databricks.
 3. **Ocultar una tool no es autorización.** El middleware puede filtrar tools por experiencia de
-   usuario, pero el caso de uso y el repositorio siempre aplican autorización.
+   usuario, pero la tool valida capability y el SQL siempre aplica autorización por filas.
    El catálogo y la política de visibilidad viven en aplicación; `ToolRegistry` solo los adapta a
    objetos `BaseTool` de LangChain.
 4. **Los resultados estructurados son neutrales al canal.** Cada tool usa
@@ -73,16 +70,19 @@ posteriormente una cola durable sin modificar el agente.
    inesperados se registran con detalle, pero el modelo solo recibe un mensaje genérico.
 9. **Los checkpoints están aislados por ambiente.** `local` usa `InMemorySaver`; `dsr`, `qa` y `prd`
    usan `MongoDBSaver` y bases distintas con el patrón `{MONGODB_DATABASE}_{APP_ENV}`.
+10. **El cliente SQL llega por runtime context.** El runner crea un `ScopedSqlWarehouseClient` por
+    invocación y lo entrega en `AgentContext`. El wrapper sobrescribe email y rol con la identidad
+    autenticada; esos campos nunca son argumentos de la tool.
 
 ## Cómo agregar una capacidad
 
 Por ejemplo, `next_best_action`:
 
 1. Agregar sus modelos/reglas puras en `domain/`.
-2. Agregar el método necesario a un port de `application/ports.py` (o crear uno cohesivo).
-3. Crear un caso de uso que reciba `Principal`, construya `DataAccessContext` y llame al port.
-4. Implementar el port en Databricks con SQL parametrizado; nunca aceptar SQL desde el modelo.
-5. Crear una tool delgada que traduzca input/output y produzca un artifact neutral.
+2. Crear un módulo de tool con SQL fijo, mapper y `@tool`.
+3. Consultar exclusivamente mediante `runtime.context.sql_client`.
+4. Mantener email, rol, SQL, tablas y credenciales fuera de los argumentos del modelo.
+5. Producir contenido JSON y, si corresponde, un artifact neutral condicionado por `render`.
 6. Agregar su `AgentToolSpec` al catálogo y registrarla en `build_tool_registry`; el registry falla
    al iniciar si el catálogo y las implementaciones divergen.
 7. Probar política, selección por rol, alcance, query, artifact y contrato del renderer.
@@ -95,7 +95,7 @@ Por ejemplo, `next_best_action`:
   `EmployeeDirectoryPort` que traduzca email/subject a `Principal` confiable.
 - Usar tablas de vigencia (`valid_from`, `valid_to`) para asignaciones y jerarquía; definir si los
   líderes ven solo reportes directos o el árbol completo.
-- Añadir checkpointer persistente si habrá conversaciones multi-turno; el `thread_id` de entrada se
+- Definir TTL, cifrado y eliminación para los checkpoints persistentes; el `thread_id` de entrada se
   usa directamente como llave de estado.
 - Auditar: principal, capacidad, filtros normalizados, tablas lógicas, filas devueltas, latencia y
   decisión de acceso. No registrar prompts/resultados con PII sin redacción y política de retención.

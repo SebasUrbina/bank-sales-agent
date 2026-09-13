@@ -4,9 +4,9 @@ Mockup ejecutable de un agente para ejecutivos bancarios, construido con FastAPI
 `create_agent` y Clean Architecture. Incluye Vista 360, listado priorizado, roles, alcance por
 cartera, jerarquía de líderes, cards de Google Chat y un adaptador Databricks.
 
-Los eventos de Google Chat reciben un acuse inmediato. FastAPI ejecuta el agente mediante
-`BackgroundTasks` y, al terminar, publica una única respuesta con texto y cards usando Google Chat
-API. El modo local usa un cliente mock; `GOOGLE_CHAT_ENABLED=true` activa ADC/Workload Identity.
+Apps Script normaliza los eventos de Google Chat y llama a FastAPI, que responde inmediatamente.
+El agente se ejecuta mediante `BackgroundTasks` y al terminar publica una única respuesta con texto
+y cards. El modo local usa clientes mock; `GOOGLE_CHAT__ENABLED=true` activa ADC/Workload Identity.
 
 ## Estructura
 
@@ -16,18 +16,20 @@ src/bank_sales_agent/
 ├── application/
 │   ├── agent/              # instrucciones, catálogo y política sin LangChain
 │   ├── ports.py            # contratos requeridos por el negocio
-│   ├── services/           # resolución de alcance
-│   └── use_cases/          # Vista 360 y listado priorizado
+│   └── use_cases/          # sólo orquestación de negocio real, no wrappers de queries
 └── infrastructure/
-    ├── agent/              # create_agent, runner, registry y tools por feature
+    ├── agent/              # runtime, registry y slices tool-query
     ├── api/                # factory, rutas, schemas y composition root en lifespan
     ├── config/             # settings y secretos tipados
-    ├── databricks/         # SQL catalog + implementaciones de ports
+    ├── databricks/         # cliente base y wrapper request-scoped
     ├── google_chat/        # renderer de artifacts a cardsV2
     └── mock/               # datos locales reemplazables
 ```
 
-La explicación de límites y extensibilidad está en [docs/architecture.md](docs/architecture.md).
+La explicación general está en [docs/architecture.md](docs/architecture.md). La discusión y decisión
+sobre la relación tool-query quedó registrada en
+[ADR 0001](docs/adr/0001-tool-query-runtime-context.md). Las prácticas recomendadas y su orden de
+adopción están en [Engineering Practices Roadmap](docs/engineering-practices-roadmap.md).
 
 ## Ejecutar
 
@@ -37,7 +39,34 @@ uv sync --group dev
 uv run uvicorn bank_sales_agent.main:app --reload
 ```
 
-La instancia mock usa un modelo real y requiere `OPENAI_API_KEY`. Una prueba REST:
+## Desarrollo
+
+### Herramientas actuales
+
+- `uv`: dependencias reproducibles y lockfile.
+- Ruff: lint, imports, modernización y formato automático.
+- MyPy strict: validación estática de tipos.
+- Pytest y `pytest-asyncio`: pruebas unitarias y asíncronas.
+- `pytest-cov`: branch coverage con un mínimo inicial de 73%.
+- `pre-commit`: Ruff lint con autofix y formatter antes de cada commit.
+- `pydantic-settings`: configuración tipada y secretos redactados.
+
+```bash
+# Instala los hooks locales una vez
+make pre-commit-install
+
+# Corrige lint y formato
+make format
+
+# Ejecuta lint, format check, MyPy, tests y coverage
+make check
+```
+
+Pytest mide branch coverage sobre `bank_sales_agent` y exige un mínimo inicial de 73%. Pre-commit
+ejecuta solamente los checks rápidos y autocorregibles de Ruff; la validación completa queda en
+`make check` y debe ejecutarse también en CI.
+
+La instancia mock usa un modelo real y requiere `LLM_GATEWAY__API_KEY`. Una prueba REST:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/v1/agent/invoke \
@@ -68,17 +97,18 @@ separan en bases `{MONGODB__DATABASE}_{APP_ENV}` para evitar cruces entre ambien
 `bank_sales_agent_qa`. El `thread_name` de entrada sigue siendo la llave `thread_id` de LangGraph.
 
 La configuración usa secciones anidadas de `pydantic-settings`. Sólo `Settings` lee el environment;
-las secciones `api`, `mongodb`, `langchain`, `databricks` y `google_chat` son `BaseModel` y se
-configuran con variables como `LANGCHAIN__MODEL_NAME` o `GOOGLE_CHAT__ENABLED`.
+las secciones `api`, `mongodb`, `llm_gateway`, `databricks` y `google_chat` son `BaseModel`. El
+cliente LLM se conecta a un APIM OpenAI-compatible y deriva su endpoint como
+`{LLM_GATEWAY__BASE_URL}/{model_name}/v1`.
 
 ## Importante antes de producción
 
 - El mock resuelve `user_email` contra un directorio local. Google Chat debe autenticarse validando
   OIDC; el email del payload solo es confiable después de validar al emisor y debe resolverse contra
   el directorio interno.
-- `infrastructure/api/lifespan.py` es el composition root. Usa repositorios mock por defecto y
-  conecta `DatabricksCustomerInsightsRepository` cuando `DATABRICKS_ENABLED=true`; sólo guarda en
-  `app.state` los casos de uso consumidos por las rutas.
+- `infrastructure/api/lifespan.py` es el composition root. Construye un cliente SQL mock en local o
+  `DatabricksSqlWarehouseClient` cuando `DATABRICKS__ENABLED=true`. El runner entrega un cliente
+  request-scoped a las tools mediante `AgentContext`.
 - `pydantic-settings` carga configuración desde variables de entorno y `.env` sólo para desarrollo.
   Los secretos se tipan como `SecretStr`; en producción deben inyectarse desde el secret manager de
   la plataforma y nunca almacenarse en el repositorio.

@@ -1,6 +1,8 @@
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
+from bank_sales_agent.domain.models import Principal
+
 
 class SqlWarehouseClient(Protocol):
     async def connect(self) -> None: ...
@@ -56,3 +58,23 @@ class DatabricksSqlWarehouseClient:
                 return [dict(zip(columns, row, strict=True)) for row in cursor.fetchall()]
 
         return await asyncio.to_thread(run)
+
+
+class ScopedSqlWarehouseClient:
+    """Inyecta identidad confiable sin exponerla como argumento controlable por el LLM."""
+
+    def __init__(self, client: SqlWarehouseClient, principal: Principal) -> None:
+        self._client = client
+        self._principal = principal
+
+    async def fetch_all(
+        self, statement: str, parameters: Mapping[str, Any]
+    ) -> Sequence[Mapping[str, Any]]:
+        return await self._client.fetch_all(
+            statement,
+            {
+                **parameters,
+                "requester_email": self._principal.email,
+                "requester_role": self._principal.role.value,
+            },
+        )

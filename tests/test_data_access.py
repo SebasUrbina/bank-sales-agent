@@ -2,52 +2,18 @@ from collections.abc import Mapping
 
 import pytest
 
-from bank_sales_agent.application.dto import ListCustomersQuery
-from bank_sales_agent.domain.models import DataAccessContext, Role
-from bank_sales_agent.infrastructure.databricks.query_catalog import (
-    CUSTOMER_360_SQL,
+from bank_sales_agent.domain.models import Principal, Role
+from bank_sales_agent.infrastructure.agent.tools.customer_360 import CUSTOMER_360_SQL
+from bank_sales_agent.infrastructure.agent.tools.customer_portfolio import (
     LIST_PRIORITIZED_SQL,
-    PORTFOLIO_ACCESS_PREDICATE,
 )
-from bank_sales_agent.infrastructure.databricks.repositories import (
-    DatabricksCustomerInsightsRepository,
-)
+from bank_sales_agent.infrastructure.databricks.client import ScopedSqlWarehouseClient
 from bank_sales_agent.infrastructure.mock.repositories import (
     EXECUTIVE_ONE,
     EXECUTIVE_TWO,
     LEADER,
-    MockCustomerInsightsRepository,
+    MockSqlWarehouseClient,
 )
-
-
-@pytest.mark.asyncio
-async def test_executive_only_sees_customers_assigned_to_own_email() -> None:
-    repository = MockCustomerInsightsRepository()
-    access = DataAccessContext(EXECUTIVE_ONE, Role.COMMERCIAL)
-    rows = await repository.list_prioritized(ListCustomersQuery(), access)
-    assert {row.executive_email for row in rows} == {EXECUTIVE_ONE}
-
-
-@pytest.mark.asyncio
-async def test_leader_sees_executives_related_in_databricks_hierarchy() -> None:
-    repository = MockCustomerInsightsRepository()
-    access = DataAccessContext(LEADER, Role.LEADER)
-    rows = await repository.list_prioritized(ListCustomersQuery(), access)
-    assert {row.executive_email for row in rows} == {EXECUTIVE_ONE, EXECUTIVE_TWO}
-
-
-@pytest.mark.asyncio
-async def test_admin_sees_every_portfolio() -> None:
-    repository = MockCustomerInsightsRepository()
-    access = DataAccessContext("admin@bank.test", Role.ADMIN)
-    rows = await repository.list_prioritized(ListCustomersQuery(), access)
-    assert {row.executive_email for row in rows} == {EXECUTIVE_ONE, EXECUTIVE_TWO}
-
-
-def test_every_customer_query_contains_central_access_predicate() -> None:
-    normalized_predicate = " ".join(PORTFOLIO_ACCESS_PREDICATE.split())
-    assert normalized_predicate in " ".join(CUSTOMER_360_SQL.split())
-    assert normalized_predicate in " ".join(LIST_PRIORITIZED_SQL.split())
 
 
 class CapturingSqlClient:
@@ -68,12 +34,58 @@ class CapturingSqlClient:
 
 
 @pytest.mark.asyncio
-async def test_databricks_receives_email_and_role_not_prefetched_executive_list() -> None:
-    client = CapturingSqlClient()
-    repository = DatabricksCustomerInsightsRepository(client)
-    await repository.get_customer_360("11111111-1", DataAccessContext(LEADER, Role.LEADER))
-    assert client.parameters == {
+async def test_scope_injects_trusted_email_and_role_after_tool_parameters() -> None:
+    raw_client = CapturingSqlClient()
+    scoped_client = ScopedSqlWarehouseClient(
+        raw_client,
+        Principal(LEADER, Role.LEADER),
+    )
+
+    await scoped_client.fetch_all(
+        CUSTOMER_360_SQL,
+        {
+            "rut": "11111111-1",
+            "requester_email": "spoofed@bank.test",
+            "requester_role": "admin",
+        },
+    )
+
+    assert raw_client.parameters == {
         "rut": "11111111-1",
         "requester_email": LEADER,
         "requester_role": "leader",
     }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("principal", "expected_executives"),
+    [
+        (Principal(EXECUTIVE_ONE, Role.COMMERCIAL), {EXECUTIVE_ONE}),
+        (Principal(LEADER, Role.LEADER), {EXECUTIVE_ONE, EXECUTIVE_TWO}),
+        (Principal("admin@bank.test", Role.ADMIN), {EXECUTIVE_ONE, EXECUTIVE_TWO}),
+    ],
+)
+async def test_mock_query_applies_same_portfolio_scope(
+    principal: Principal,
+    expected_executives: set[str],
+) -> None:
+    client = ScopedSqlWarehouseClient(MockSqlWarehouseClient(), principal)
+    rows = await client.fetch_all(
+        LIST_PRIORITIZED_SQL,
+        {
+            "executive_email": None,
+            "segment": None,
+            "min_priority": None,
+            "limit": 10,
+        },
+    )
+
+    assert {str(row["executive_email"]) for row in rows} == expected_executives
+
+
+def test_every_tool_query_requires_trusted_scope_parameters() -> None:
+    for statement in (CUSTOMER_360_SQL, LIST_PRIORITIZED_SQL):
+        assert ":requester_email" in statement
+        assert ":requester_role" in statement
+        assert "gold.commercial_hierarchy" in statement

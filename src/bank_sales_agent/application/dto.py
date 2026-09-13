@@ -5,14 +5,6 @@ from bank_sales_agent.domain.models import Principal
 
 
 @dataclass(frozen=True)
-class ListCustomersQuery:
-    limit: int = 10
-    segment: str | None = None
-    min_priority: float | None = None
-    executive_email: str | None = None
-
-
-@dataclass(frozen=True)
 class AgentInvocation:
     request_id: str
     principal: Principal

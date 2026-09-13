@@ -1,7 +1,8 @@
 from enum import StrEnum
 from typing import Self
+from urllib.parse import quote
 
-from pydantic import BaseModel, Field, SecretStr, model_validator
+from pydantic import AnyHttpUrl, BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,9 +29,18 @@ class MongoSettings(BaseModel):
         return f"{self.database}_{environment.value}"
 
 
-class LangChainSettings(BaseModel):
+class LlmGatewaySettings(BaseModel):
+    base_url: AnyHttpUrl = AnyHttpUrl("http://localhost:8080/llms")
     model_name: str = "openai:gpt-5-mini"
-    openai_api_key: SecretStr | None = None
+    api_key: SecretStr | None = None
+    subscription_key: SecretStr | None = None
+    timeout_seconds: float = Field(default=60.0, gt=0, le=300)
+    max_retries: int = Field(default=2, ge=0, le=5)
+
+    @property
+    def endpoint_url(self) -> str:
+        model_name = self.model_name.removeprefix("openai:")
+        return f"{str(self.base_url).rstrip('/')}/{quote(model_name, safe='')}/v1"
 
 
 class DatabricksSettings(BaseModel):
@@ -59,19 +69,15 @@ class Settings(BaseSettings):
     app_env: AppEnvironment = AppEnvironment.LOCAL
     api: ApiSettings = Field(default_factory=ApiSettings)
     mongodb: MongoSettings = Field(default_factory=MongoSettings)
-    langchain: LangChainSettings = Field(default_factory=LangChainSettings)
+    llm_gateway: LlmGatewaySettings = Field(default_factory=LlmGatewaySettings)
     databricks: DatabricksSettings = Field(default_factory=DatabricksSettings)
     google_chat: GoogleChatSettings = Field(default_factory=GoogleChatSettings)
 
     @model_validator(mode="after")
     def validate_enabled_integrations(self) -> Self:
-        mongo_uri = (
-            self.mongodb.uri.get_secret_value().strip() if self.mongodb.uri else ""
-        )
+        mongo_uri = self.mongodb.uri.get_secret_value().strip() if self.mongodb.uri else ""
         if self.app_env is not AppEnvironment.LOCAL and not mongo_uri:
-            raise ValueError(
-                f"MONGODB__URI es obligatorio en APP_ENV={self.app_env.value}"
-            )
+            raise ValueError(f"MONGODB__URI es obligatorio en APP_ENV={self.app_env.value}")
 
         if self.databricks.enabled:
             missing = [
@@ -89,7 +95,5 @@ class Settings(BaseSettings):
                 )
             ]
             if missing:
-                raise ValueError(
-                    "Databricks está habilitado pero faltan: " + ", ".join(missing)
-                )
+                raise ValueError("Databricks está habilitado pero faltan: " + ", ".join(missing))
         return self

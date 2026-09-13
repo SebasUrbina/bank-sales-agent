@@ -1,17 +1,7 @@
-from collections.abc import Sequence
 from typing import Protocol
 
-from bank_sales_agent.application.dto import (
-    AgentInvocation,
-    AgentResult,
-    ListCustomersQuery,
-)
-from bank_sales_agent.domain.models import (
-    Customer360,
-    DataAccessContext,
-    Principal,
-    PrioritizedCustomer,
-)
+from bank_sales_agent.application.dto import AgentInvocation, AgentResult
+from bank_sales_agent.domain.models import Principal
 
 
 class EmployeeDirectoryRepository(Protocol):
@@ -20,11 +10,3 @@ class EmployeeDirectoryRepository(Protocol):
 
 class AgentRunner(Protocol):
     async def run(self, invocation: AgentInvocation) -> AgentResult: ...
-
-
-class CustomerInsightsRepository(Protocol):
-    async def get_customer_360(self, rut: str, access: DataAccessContext) -> Customer360 | None: ...
-
-    async def list_prioritized(
-        self, query: ListCustomersQuery, access: DataAccessContext
-    ) -> Sequence[PrioritizedCustomer]: ...

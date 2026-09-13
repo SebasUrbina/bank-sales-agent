@@ -5,11 +5,11 @@ from bank_sales_agent.infrastructure.config.settings import AppEnvironment, Sett
 
 
 def test_secrets_are_not_exposed_in_settings_representation() -> None:
-    settings = Settings(langchain={"openai_api_key": "super-secret"})
+    settings = Settings(llm_gateway={"api_key": "super-secret"})
 
     assert "super-secret" not in repr(settings)
-    assert settings.langchain.openai_api_key is not None
-    assert settings.langchain.openai_api_key.get_secret_value() == "super-secret"
+    assert settings.llm_gateway.api_key is not None
+    assert settings.llm_gateway.api_key.get_secret_value() == "super-secret"
 
 
 def test_databricks_credentials_are_required_only_when_enabled() -> None:
@@ -38,10 +38,10 @@ def test_checkpoint_database_is_isolated_by_environment() -> None:
 
 
 def test_nested_environment_variables_are_loaded(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("LANGCHAIN__MODEL_NAME", "openai:test-model")
+    monkeypatch.setenv("LLM_GATEWAY__MODEL_NAME", "openai:test-model")
     monkeypatch.setenv("GOOGLE_CHAT__REQUEST_TIMEOUT_SECONDS", "35")
 
     settings = Settings(_env_file=None)
 
-    assert settings.langchain.model_name == "openai:test-model"
+    assert settings.llm_gateway.model_name == "openai:test-model"
     assert settings.google_chat.request_timeout_seconds == 35

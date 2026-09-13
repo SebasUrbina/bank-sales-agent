@@ -24,14 +24,6 @@ class Principal:
 
 
 @dataclass(frozen=True)
-class DataAccessContext:
-    """Identidad confiable que cada query usa para aplicar seguridad por filas."""
-
-    requester_email: str
-    role: Role
-
-
-@dataclass(frozen=True)
 class Customer360:
     rut: str
     executive_email: str

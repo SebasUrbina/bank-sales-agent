@@ -18,8 +18,10 @@ dependencies = [
 [dependency-groups]
 dev = [
   "mypy>=1.17,<2",
+  "pre-commit>=4.6.2",
   "pytest>=8.4,<9",
   "pytest-asyncio>=1.1,<2",
+  "pytest-cov>=7.1.0",
   "ruff>=0.12,<1",
 ]
 
@@ -33,6 +35,21 @@ packages = ["src/bank_sales_agent"]
 [tool.pytest.ini_options]
 pythonpath = ["src"]
 testpaths = ["tests"]
+addopts = [
+  "--strict-config",
+  "--strict-markers",
+  "--cov=bank_sales_agent",
+  "--cov-report=term-missing",
+]
+
+[tool.coverage.run]
+branch = true
+source = ["bank_sales_agent"]
+
+[tool.coverage.report]
+fail_under = 73
+show_missing = true
+skip_covered = false
 
 [tool.ruff]
 line-length = 100
@@ -40,6 +57,9 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+docstring-code-format = true
 
 [tool.mypy]
 python_version = "3.12"
