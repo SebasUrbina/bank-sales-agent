@@ -15,9 +15,10 @@ from langchain.agents.middleware import (
 from langchain.messages import ToolMessage
 
 from bank_sales_agent.application.agent.instructions import build_agent_instructions
+from bank_sales_agent.application.skills import SkillProvider
 from bank_sales_agent.domain.errors import DomainError
+from bank_sales_agent.infrastructure.agent.capabilities import DynamicCapabilitiesMiddleware
 from bank_sales_agent.infrastructure.agent.context import AgentContext
-from bank_sales_agent.infrastructure.agent.tools.registry import ToolRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -94,25 +95,11 @@ async def safe_tool_errors(
         )
 
 
-def build_tool_selection(registry: ToolRegistry) -> Any:
-    @wrap_model_call
-    async def select_tools(
-        request: ModelRequest,
-        handler: Callable[[ModelRequest], Awaitable[ModelResponse]],
-    ) -> ModelResponse:
-        context = request.runtime.context
-        if not isinstance(context, AgentContext):
-            raise RuntimeError("AgentContext es obligatorio")
-        return await handler(request.override(tools=registry.for_principal(context.principal)))
-
-    return select_tools
-
-
-def harness_middlewares(registry: ToolRegistry) -> list[Any]:
+def harness_middlewares(skill_provider: SkillProvider) -> list[Any]:
     """Punto unico para guardrails, auditoria, retries y seleccion de tools."""
     return [
         role_aware_prompt,
-        build_tool_selection(registry),
         model_observability,
         safe_tool_errors,
+        DynamicCapabilitiesMiddleware(skill_provider),
     ]

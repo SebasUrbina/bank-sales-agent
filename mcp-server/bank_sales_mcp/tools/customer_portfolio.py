@@ -3,17 +3,16 @@ from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from typing import Annotated, Any
 
-from langchain.tools import ToolRuntime, tool
-from pydantic import Field
-
-from bank_sales_agent.application.artifacts import (
+from bank_sales_contracts.artifacts import (
     AgentArtifact,
     PrioritizedCustomersArtifact,
 )
-from bank_sales_agent.domain.errors import ForbiddenError
-from bank_sales_agent.domain.models import Capability, PrioritizedCustomer, Role
-from bank_sales_agent.domain.policies import can_use
-from bank_sales_agent.infrastructure.agent.context import AgentContext
+from bank_sales_contracts.errors import ForbiddenError
+from bank_sales_contracts.models import PrioritizedCustomer, Role
+from pydantic import Field
+
+from bank_sales_mcp.context import ToolContext
+from bank_sales_mcp.policies import Capability, can_use
 
 LIST_PRIORITIZED_SQL = """
 SELECT
@@ -28,11 +27,12 @@ JOIN gold.assignments a ON a.rut = s.rut AND a.is_current = TRUE
 WHERE (
   :requester_role = 'admin'
   OR (
-    :requester_role IN ('commercial', 'integral', 'investments')
+    :requester_role IN ('commercial', 'integral', 'investments_advisor',
+      'investments_non_advisor', 'service_center')
     AND a.executive_email = :requester_email
   )
   OR (
-    :requester_role = 'leader'
+    :requester_role = 'manager'
     AND EXISTS (
       SELECT 1 FROM gold.commercial_hierarchy h
       WHERE h.leader_email = :requester_email
@@ -64,9 +64,8 @@ def map_prioritized_customers(
     )
 
 
-@tool(response_format="content_and_artifact")
 async def list_prioritized_customers(
-    runtime: ToolRuntime[AgentContext],
+    context: ToolContext,
     limit: Annotated[int, Field(ge=1, le=100)] = 10,
     segment: Annotated[str | None, "Segmento comercial opcional"] = None,
     min_priority: Annotated[float | None, Field(ge=0, le=1)] = None,
@@ -76,7 +75,7 @@ async def list_prioritized_customers(
     render: Annotated[bool, "True para mostrar este resultado como card en Google Chat"] = False,
 ) -> tuple[str, AgentArtifact | None]:
     """Lista clientes priorizados dentro de la cartera autorizada del usuario."""
-    principal = runtime.context.principal
+    principal = context.principal
     if not can_use(principal, Capability.LIST_CUSTOMERS):
         raise ForbiddenError("Rol sin acceso al listado de clientes")
     if (
@@ -86,7 +85,7 @@ async def list_prioritized_customers(
     ):
         raise ForbiddenError("El ejecutivo solicitado está fuera del alcance autorizado")
 
-    rows = await runtime.context.sql_client.fetch_all(
+    rows = await context.sql_client.fetch_all(
         LIST_PRIORITIZED_SQL,
         {
             "executive_email": executive_email,

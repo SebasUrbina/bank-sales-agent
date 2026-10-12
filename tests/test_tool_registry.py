@@ -1,8 +1,7 @@
 import pytest
 from langchain.tools import tool
 
-from bank_sales_agent.domain.models import Principal, Role
-from bank_sales_agent.infrastructure.agent.tools.registry import ToolRegistry, build_tool_registry
+from bank_sales_agent.infrastructure.agent.tools.registry import ToolRegistry
 
 
 @tool
@@ -17,23 +16,15 @@ def list_prioritized_customers(limit: int = 10) -> str:
     return str(limit)
 
 
-def test_registry_returns_tools_visible_for_principal() -> None:
-    registry = ToolRegistry([customer_360, list_prioritized_customers])
-    principal = Principal("user@bank.test", Role.COMMERCIAL)
-    assert {item.name for item in registry.for_principal(principal)} == {
-        "customer_360",
-        "list_prioritized_customers",
-    }
+def test_registry_accepts_remote_tools_without_local_catalog() -> None:
+    registry = ToolRegistry([customer_360])
+    assert [item.name for item in registry.all()] == ["customer_360"]
 
 
-def test_data_tools_expose_render_disabled_by_default() -> None:
-    registry = build_tool_registry()
-
-    for data_tool in registry.all():
-        assert data_tool.args_schema is not None
-        assert data_tool.args_schema.model_fields["render"].default is False
+def test_registry_accepts_no_tools_for_a_user() -> None:
+    assert ToolRegistry([]).all() == []
 
 
-def test_registry_fails_fast_when_catalog_and_tools_diverge() -> None:
-    with pytest.raises(ValueError, match="missing"):
-        ToolRegistry([customer_360])
+def test_registry_rejects_duplicate_names() -> None:
+    with pytest.raises(ValueError, match="duplicado"):
+        ToolRegistry([customer_360, customer_360])

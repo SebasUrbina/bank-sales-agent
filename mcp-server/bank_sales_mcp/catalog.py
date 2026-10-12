@@ -1,8 +1,9 @@
 from dataclasses import dataclass
 from enum import StrEnum
 
-from bank_sales_agent.domain.models import Capability, Principal
-from bank_sales_agent.domain.policies import can_use
+from bank_sales_contracts.models import Principal
+
+from bank_sales_mcp.policies import Capability, can_use
 
 
 class ToolCategory(StrEnum):

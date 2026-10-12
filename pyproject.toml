@@ -4,19 +4,23 @@ version = "0.1.0"
 description = "Agente comercial bancario con Clean Architecture, LangChain y Google Chat"
 requires-python = ">=3.12"
 dependencies = [
-  "databricks-sql-connector>=4.0,<5",
+  "bank-sales-contracts==0.2.0",
   "fastapi>=0.116,<1",
+  "fastmcp>=2.13.3,<2.14",
   "google-auth>=2.40,<3",
   "httpx>=0.28,<1",
   "langchain>=1.1,<2",
   "langchain-openai>=1.1,<2",
   "langgraph-checkpoint-mongodb>=0.5,<0.6",
   "pydantic-settings>=2.10,<3",
+  "pyyaml>=6,<7",
+  "pyjwt>=2.10,<3",
   "uvicorn[standard]>=0.35,<1",
 ]
 
 [dependency-groups]
 dev = [
+  "bank-sales-mcp==0.1.0",
   "mypy>=1.17,<2",
   "pre-commit>=4.6.2",
   "pytest>=8.4,<9",
@@ -24,6 +28,10 @@ dev = [
   "pytest-cov>=7.1.0",
   "ruff>=0.12,<1",
 ]
+
+[tool.uv.sources]
+bank-sales-contracts = { path = "packages/bank-sales-contracts" }
+bank-sales-mcp = { path = "mcp-server" }
 
 [build-system]
 requires = ["hatchling"]
@@ -33,7 +41,7 @@ build-backend = "hatchling.build"
 packages = ["src/bank_sales_agent"]
 
 [tool.pytest.ini_options]
-pythonpath = ["src"]
+pythonpath = ["src", "packages/bank-sales-contracts", "mcp-server"]
 testpaths = ["tests"]
 addopts = [
   "--strict-config",

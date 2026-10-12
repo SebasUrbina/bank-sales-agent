@@ -14,6 +14,7 @@ from bank_sales_agent.infrastructure.google_chat.models import (
     GoogleChatDecoratedText,
     GoogleChatMessage,
     GoogleChatSection,
+    GoogleChatTextParagraph,
 )
 
 
@@ -64,7 +65,12 @@ def prioritized_customers_card(
                 title="Clientes priorizados",
                 subtitle=f"{len(customers)} resultados",
             ),
-            sections=(GoogleChatSection(widgets=widgets),),
+            sections=(
+                GoogleChatSection(
+                    widgets=widgets
+                    or (GoogleChatTextParagraph("Sin clientes en el alcance solicitado"),)
+                ),
+            ),
         ),
     )
 
@@ -81,5 +87,5 @@ class GoogleChatArtifactRenderer:
     def render(self, result: AgentResult) -> GoogleChatMessage:
         return GoogleChatMessage(
             text=result.text,
-            cards=tuple(render_artifact(artifact) for artifact in result.artifacts),
+            cards=tuple(render_artifact(artifact) for artifact in result.artifacts[:3]),
         )

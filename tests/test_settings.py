@@ -12,11 +12,6 @@ def test_secrets_are_not_exposed_in_settings_representation() -> None:
     assert settings.llm_gateway.api_key.get_secret_value() == "super-secret"
 
 
-def test_databricks_credentials_are_required_only_when_enabled() -> None:
-    with pytest.raises(ValidationError, match="DATABRICKS__SERVER_HOSTNAME"):
-        Settings(databricks={"enabled": True})
-
-
 def test_non_local_environment_requires_mongodb_uri() -> None:
     with pytest.raises(ValidationError, match="MONGODB__URI"):
         Settings(app_env=AppEnvironment.QA)

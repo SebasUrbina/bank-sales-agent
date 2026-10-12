@@ -1,18 +1,18 @@
 from collections.abc import Mapping
 
 import pytest
+from bank_sales_contracts.models import Principal, Role
 
-from bank_sales_agent.domain.models import Principal, Role
-from bank_sales_agent.infrastructure.agent.tools.customer_360 import CUSTOMER_360_SQL
-from bank_sales_agent.infrastructure.agent.tools.customer_portfolio import (
-    LIST_PRIORITIZED_SQL,
-)
-from bank_sales_agent.infrastructure.databricks.client import ScopedSqlWarehouseClient
-from bank_sales_agent.infrastructure.mock.repositories import (
+from bank_sales_mcp.mock import (
     EXECUTIVE_ONE,
     EXECUTIVE_TWO,
     LEADER,
     MockSqlWarehouseClient,
+)
+from bank_sales_mcp.sql import ScopedSqlWarehouseClient
+from bank_sales_mcp.tools.customer_360 import CUSTOMER_360_SQL
+from bank_sales_mcp.tools.customer_portfolio import (
+    LIST_PRIORITIZED_SQL,
 )
 
 
@@ -53,7 +53,7 @@ async def test_scope_injects_trusted_email_and_role_after_tool_parameters() -> N
     assert raw_client.parameters == {
         "rut": "11111111-1",
         "requester_email": LEADER,
-        "requester_role": "leader",
+        "requester_role": "manager",
     }
 
 

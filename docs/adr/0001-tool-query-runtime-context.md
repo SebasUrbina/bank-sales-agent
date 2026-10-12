@@ -1,6 +1,6 @@
 # ADR 0001: Tools verticales con cliente SQL en runtime context
 
-- Estado: aceptado
+- Estado: aceptado; transporte actualizado por [ADR 0002](0002-mcp-role-profiles.md)
 - Fecha: 2026-09-12
 - Alcance: tools analíticas que consultan Databricks
 

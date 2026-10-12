@@ -1,7 +1,7 @@
 from collections.abc import Mapping, Sequence
 from typing import Any, Protocol
 
-from bank_sales_agent.domain.models import Principal
+from bank_sales_contracts.models import Principal
 
 
 class SqlWarehouseClient(Protocol):

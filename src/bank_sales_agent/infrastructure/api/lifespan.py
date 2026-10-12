@@ -10,13 +10,7 @@ from bank_sales_agent.infrastructure.agent.checkpointer import (
     close_checkpointer,
 )
 from bank_sales_agent.infrastructure.agent.runner import LangChainAgentRunner
-from bank_sales_agent.infrastructure.agent.runtime import build_agent
-from bank_sales_agent.infrastructure.agent.tools.registry import build_tool_registry
 from bank_sales_agent.infrastructure.config.settings import Settings
-from bank_sales_agent.infrastructure.databricks.client import (
-    DatabricksSqlWarehouseClient,
-    SqlWarehouseClient,
-)
 from bank_sales_agent.infrastructure.google_chat.cards import GoogleChatArtifactRenderer
 from bank_sales_agent.infrastructure.google_chat.client import (
     GoogleAuthTokenProvider,
@@ -26,10 +20,11 @@ from bank_sales_agent.infrastructure.google_chat.client import (
 )
 from bank_sales_agent.infrastructure.google_chat.publisher import GoogleChatPublisher
 from bank_sales_agent.infrastructure.llm.factory import build_chat_model
+from bank_sales_agent.infrastructure.mcp.client import McpToolGateway
 from bank_sales_agent.infrastructure.mock.repositories import (
     MockEmployeeDirectoryRepository,
-    MockSqlWarehouseClient,
 )
+from bank_sales_agent.infrastructure.skills.filesystem import FileSkillProvider
 
 
 def create_lifespan(
@@ -44,19 +39,6 @@ def create_lifespan(
             settings.mongodb,
         )
 
-        sql_client: SqlWarehouseClient
-        if settings.databricks.enabled:
-            assert settings.databricks.server_hostname is not None
-            assert settings.databricks.http_path is not None
-            assert settings.databricks.access_token is not None
-            sql_client = DatabricksSqlWarehouseClient(
-                hostname=settings.databricks.server_hostname,
-                http_path=settings.databricks.http_path,
-                token=settings.databricks.access_token.get_secret_value(),
-            )
-        else:
-            sql_client = MockSqlWarehouseClient()
-
         google_chat_client: GoogleChatClient
         if settings.google_chat.enabled:
             google_chat_client = GoogleChatApiClient(
@@ -66,11 +48,14 @@ def create_lifespan(
         else:
             google_chat_client = MockGoogleChatClient()
 
-        tool_registry = build_tool_registry()
         chat_model = build_chat_model(settings.llm_gateway)
         agent_runner = LangChainAgentRunner(
-            build_agent(chat_model, tool_registry, checkpointer),
-            sql_client,
+            chat_model,
+            checkpointer,
+            McpToolGateway(settings.mcp),
+            FileSkillProvider(
+                settings.agent_skills.directories, settings.agent_skills.max_file_bytes
+            ),
         )
         publisher = GoogleChatPublisher(
             google_chat_client,
@@ -83,12 +68,10 @@ def create_lifespan(
         app.state.google_chat_publisher = publisher
 
         try:
-            await sql_client.connect()
             await google_chat_client.connect()
             yield
         finally:
             await google_chat_client.close()
-            await sql_client.close()
             await asyncio.to_thread(close_checkpointer, checkpointer)
 
     return lifespan

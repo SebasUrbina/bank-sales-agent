@@ -4,13 +4,12 @@ from dataclasses import asdict
 from decimal import Decimal
 from typing import Annotated, Any
 
-from langchain.tools import ToolRuntime, tool
+from bank_sales_contracts.artifacts import AgentArtifact, Customer360Artifact
+from bank_sales_contracts.errors import CustomerNotFoundError, ForbiddenError
+from bank_sales_contracts.models import Customer360
 
-from bank_sales_agent.application.artifacts import AgentArtifact, Customer360Artifact
-from bank_sales_agent.domain.errors import CustomerNotFoundError, ForbiddenError
-from bank_sales_agent.domain.models import Capability, Customer360
-from bank_sales_agent.domain.policies import can_use
-from bank_sales_agent.infrastructure.agent.context import AgentContext
+from bank_sales_mcp.context import ToolContext
+from bank_sales_mcp.policies import Capability, can_use
 
 CUSTOMER_360_SQL = """
 SELECT
@@ -28,11 +27,12 @@ WHERE c.rut = :rut
   AND (
     :requester_role = 'admin'
     OR (
-      :requester_role IN ('commercial', 'integral', 'investments')
+      :requester_role IN ('commercial', 'integral', 'investments_advisor',
+      'investments_non_advisor', 'service_center')
       AND a.executive_email = :requester_email
     )
     OR (
-      :requester_role = 'leader'
+      :requester_role = 'manager'
       AND EXISTS (
         SELECT 1 FROM gold.commercial_hierarchy h
         WHERE h.leader_email = :requester_email
@@ -60,18 +60,17 @@ def map_customer_360(rows: Sequence[Mapping[str, Any]]) -> Customer360 | None:
     )
 
 
-@tool(response_format="content_and_artifact")
 async def customer_360(
     rut: Annotated[str, "RUT chileno del cliente, con dígito verificador"],
-    runtime: ToolRuntime[AgentContext],
+    context: ToolContext,
     render: Annotated[bool, "True para mostrar este resultado como card en Google Chat"] = False,
 ) -> tuple[str, AgentArtifact | None]:
     """Obtiene la vista consolidada 360 de un cliente autorizado."""
-    principal = runtime.context.principal
+    principal = context.principal
     if not can_use(principal, Capability.CUSTOMER_360):
         raise ForbiddenError("Rol sin acceso a vista 360")
 
-    rows = await runtime.context.sql_client.fetch_all(CUSTOMER_360_SQL, {"rut": rut})
+    rows = await context.sql_client.fetch_all(CUSTOMER_360_SQL, {"rut": rut})
     result = map_customer_360(rows)
     if result is None:
         raise CustomerNotFoundError("Cliente no encontrado en el alcance autorizado")
