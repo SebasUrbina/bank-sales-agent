@@ -122,7 +122,7 @@ app/
 │   └── use_cases/          # sólo orquestación de negocio real, no wrappers de queries
 └── infrastructure/
     ├── agent/              # runtime, middleware del grafo y registry de tools MCP
-    ├── api/                # factory, rutas, schemas y composition root en lifespan
+    ├── api/                # factory (app.py), routers (router.py), schemas y lifespan
     ├── google_chat/        # cliente, publisher y middleware que publica cardsV2
     ├── mcp/                # cliente HTTP y adaptadores de tools externas
     ├── skills/             # provider SKILL.md y lectura progresiva de recursos
