@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from bank_sales_agent.infrastructure.config.settings import AppEnvironment, Settings
+from app.settings import AppEnvironment, Settings
 
 
 def test_secrets_are_not_exposed_in_settings_representation() -> None:

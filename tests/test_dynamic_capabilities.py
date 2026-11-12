@@ -7,6 +7,7 @@ import pytest
 from bank_sales_mcp import catalog as server_catalog
 from bank_sales_mcp.catalog import AgentToolSpec, ToolCategory
 from bank_sales_mcp.policies import Capability
+from conftest import chat_thread
 from fastmcp import FastMCP
 from fastmcp.server.middleware import Middleware
 from langchain.messages import AIMessage, HumanMessage, ToolMessage
@@ -15,13 +16,14 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langgraph.checkpoint.memory import InMemorySaver
 from test_skills import write_skill
 
-from bank_sales_agent.application.dto import AgentInvocation
-from bank_sales_agent.domain.models import Principal, Role
-from bank_sales_agent.infrastructure.agent import runtime
-from bank_sales_agent.infrastructure.agent.runner import LangChainAgentRunner
-from bank_sales_agent.infrastructure.mcp.client import McpToolGateway
-from bank_sales_agent.infrastructure.mcp.contracts import ToolResponse
-from bank_sales_agent.infrastructure.skills.filesystem import FileSkillProvider
+from app.application.dto import AgentInvocation
+from app.domain.models import Principal, Role
+from app.infrastructure.agent import runtime
+from app.infrastructure.agent.runner import LangChainAgentRunner
+from app.infrastructure.google_chat.client import MockGoogleChatClient
+from app.infrastructure.google_chat.middleware import CARDS_NOT_SHOWN, CARDS_SHOWN
+from app.infrastructure.mcp.client import McpToolGateway
+from app.infrastructure.skills.filesystem import FileSkillProvider
 
 
 class ScriptedModel(FakeMessagesListChatModel):
@@ -53,12 +55,15 @@ def call(name: str, args: dict[str, Any]) -> AIMessage:
 
 
 def invocation(email: str, thread: str = "test-thread", text: str = "Ayúdame") -> AgentInvocation:
-    return AgentInvocation(thread, Principal(email, Role.COMMERCIAL), text, thread)
+    return AgentInvocation(thread, Principal(email, Role.COMMERCIAL), text, chat_thread(thread))
 
 
 @pytest.mark.asyncio
 async def test_graph_is_created_once_and_discovers_new_tools_each_invocation(
-    http_gateway: McpToolGateway, mcp_server: FastMCP, monkeypatch: pytest.MonkeyPatch
+    http_gateway: McpToolGateway,
+    mcp_server: FastMCP,
+    monkeypatch: pytest.MonkeyPatch,
+    chat_client: MockGoogleChatClient,
 ) -> None:
     create = Mock(wraps=runtime.create_agent)
     monkeypatch.setattr(runtime, "create_agent", create)
@@ -72,9 +77,9 @@ async def test_graph_is_created_once_and_discovers_new_tools_each_invocation(
             AIMessage(content="Segunda"),
         ]
     )
-    runner = LangChainAgentRunner(model, InMemorySaver(), http_gateway)
-    first = await runner.run(invocation("ejecutivo@bank.test"))
-    assert first.artifacts
+    runner = LangChainAgentRunner(model, InMemorySaver(), http_gateway, chat_client)
+    await runner.run(invocation("ejecutivo@bank.test"))
+    assert len(chat_client.sent_messages) == 1
     monkeypatch.setattr(
         server_catalog,
         "TOOL_CATALOG",
@@ -85,13 +90,13 @@ async def test_graph_is_created_once_and_discovers_new_tools_each_invocation(
     )
 
     @mcp_server.tool(name="new_context")
-    async def new_context(topic: str) -> ToolResponse:
+    async def new_context(topic: str) -> str:
         """Consulta nueva después de crear el agente."""
-        return ToolResponse(context=topic)
+        return topic
 
     second = await runner.run(invocation("ejecutivo@bank.test"))
     assert second.text == "Segunda"
-    assert second.artifacts == ()
+    assert len(chat_client.sent_messages) == 1
     assert create.call_count == 1
     assert counter.count == 2  # Cuatro llamadas al modelo, sólo dos tools/list.
     assert "new_context" not in model.seen_tools[0]
@@ -100,7 +105,10 @@ async def test_graph_is_created_once_and_discovers_new_tools_each_invocation(
 
 @pytest.mark.asyncio
 async def test_skills_are_progressive_and_share_no_authorization(
-    http_gateway: McpToolGateway, mcp_server: FastMCP, tmp_path: Path
+    http_gateway: McpToolGateway,
+    mcp_server: FastMCP,
+    tmp_path: Path,
+    chat_client: MockGoogleChatClient,
 ) -> None:
     directory = write_skill(tmp_path, body="SECRET_INSTRUCTIONS: consultar referencia outline.md")
     (directory / "outline.md").write_text("REFERENCE_CONTENT")
@@ -115,7 +123,7 @@ async def test_skills_are_progressive_and_share_no_authorization(
         ]
     )
     runner = LangChainAgentRunner(
-        model, InMemorySaver(), http_gateway, FileSkillProvider([tmp_path])
+        model, InMemorySaver(), http_gateway, chat_client, FileSkillProvider([tmp_path])
     )
     result = await runner.run(invocation("servicio@bank.test"))
     assert result.text
@@ -136,7 +144,9 @@ async def test_skills_are_progressive_and_share_no_authorization(
 
 
 @pytest.mark.asyncio
-async def test_shared_graph_isolates_concurrent_sessions(http_gateway: McpToolGateway) -> None:
+async def test_shared_graph_isolates_concurrent_sessions(
+    http_gateway: McpToolGateway, chat_client: MockGoogleChatClient
+) -> None:
     class RoutingModel(ScriptedModel):
         async def _agenerate(self, messages: Any, **kwargs: Any) -> ChatResult:
             await asyncio.sleep(0)
@@ -147,19 +157,31 @@ async def test_shared_graph_isolates_concurrent_sessions(http_gateway: McpToolGa
                 message = AIMessage(content=str(latest.content))
             return ChatResult(generations=[ChatGeneration(message=message)])
 
-    runner = LangChainAgentRunner(RoutingModel(responses=[]), InMemorySaver(), http_gateway)
+    runner = LangChainAgentRunner(
+        RoutingModel(responses=[]), InMemorySaver(), http_gateway, chat_client
+    )
     first, second = await asyncio.gather(
         runner.run(invocation("ejecutivo@bank.test", "thread-a", "11111111-1")),
         runner.run(invocation("inversiones@bank.test", "thread-b", "22222222-2")),
     )
     assert "Ana Perez" in first.text and "Luis Soto" not in first.text
     assert "Luis Soto" in second.text and "Ana Perez" not in second.text
-    assert first.artifacts and second.artifacts
+    cards_by_thread = {
+        sent["thread_name"]: sent["body"]["cardsV2"][0]["card"]["header"]["title"]
+        for sent in chat_client.sent_messages
+    }
+    assert cards_by_thread == {
+        "spaces/AAAA/threads/thread-a": "Ana Perez",
+        "spaces/AAAA/threads/thread-b": "Luis Soto",
+    }
 
 
 @pytest.mark.asyncio
 async def test_reserved_skill_tool_name_fails_before_model(
-    http_gateway: McpToolGateway, mcp_server: FastMCP, monkeypatch: pytest.MonkeyPatch
+    http_gateway: McpToolGateway,
+    mcp_server: FastMCP,
+    monkeypatch: pytest.MonkeyPatch,
+    chat_client: MockGoogleChatClient,
 ) -> None:
     monkeypatch.setattr(
         server_catalog,
@@ -171,12 +193,64 @@ async def test_reserved_skill_tool_name_fails_before_model(
     )
 
     @mcp_server.tool(name="load_skill")
-    async def conflicting_tool() -> ToolResponse:
+    async def conflicting_tool() -> str:
         """Nombre local reservado."""
-        return ToolResponse(context="conflict")
+        return "conflict"
 
     model = ScriptedModel(responses=[AIMessage(content="No se debe llamar")])
-    runner = LangChainAgentRunner(model, InMemorySaver(), http_gateway)
+    runner = LangChainAgentRunner(model, InMemorySaver(), http_gateway, chat_client)
     with pytest.raises(ValueError, match="reservado"):
         await runner.run(invocation("ejecutivo@bank.test"))
     assert model.seen_system == []
+
+
+@pytest.mark.asyncio
+async def test_cards_are_published_when_tool_finishes_and_hidden_from_model(
+    http_gateway: McpToolGateway, chat_client: MockGoogleChatClient
+) -> None:
+    class PublishingModel(ScriptedModel):
+        async def _agenerate(self, messages: Any, **kwargs: Any) -> ChatResult:
+            sent_before_final_answer.append(len(chat_client.sent_messages))
+            return await super()._agenerate(messages, **kwargs)
+
+    sent_before_final_answer: list[int] = []
+    model = PublishingModel(
+        responses=[
+            call("customer_product_offers", {"rut": "11111111-1", "render": True}),
+            AIMessage(content="Ana tiene dos ofertas vigentes."),
+        ]
+    )
+    runner = LangChainAgentRunner(model, InMemorySaver(), http_gateway, chat_client)
+    result = await runner.run(invocation("ejecutivo@bank.test"))
+
+    assert result.text == "Ana tiene dos ofertas vigentes."
+    assert sent_before_final_answer == [0, 1]
+    [sent] = chat_client.sent_messages
+    assert sent["oauth_token"] is None
+    assert sent["thread_name"] == "spaces/AAAA/threads/test-thread"
+    assert sent["body"]["cardsV2"][0]["cardId"] == "offers-11111111-1"
+    tool_message = next(m for m in model.seen_messages[1] if isinstance(m, ToolMessage))
+    assert CARDS_SHOWN in str(tool_message.content)
+    assert "cardsV2" not in str(tool_message.content)
+    assert tool_message.artifact["cardsV2"]
+
+
+@pytest.mark.asyncio
+async def test_failed_card_publication_is_reported_to_model(http_gateway: McpToolGateway) -> None:
+    class FailingChatClient(MockGoogleChatClient):
+        async def create_message(self, *args: Any, **kwargs: Any) -> dict[str, Any]:
+            raise RuntimeError("Google Chat no disponible")
+
+    model = ScriptedModel(
+        responses=[
+            call("upcoming_maturities", {"render": True}),
+            AIMessage(content="Ana tiene un depósito por vencer."),
+        ]
+    )
+    runner = LangChainAgentRunner(model, InMemorySaver(), http_gateway, FailingChatClient())
+    result = await runner.run(invocation("ejecutivo@bank.test"))
+
+    assert result.text == "Ana tiene un depósito por vencer."
+    tool_message = next(m for m in model.seen_messages[1] if isinstance(m, ToolMessage))
+    assert tool_message.status == "success"
+    assert CARDS_NOT_SHOWN in str(tool_message.content)

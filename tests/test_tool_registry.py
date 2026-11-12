@@ -1,7 +1,7 @@
 import pytest
 from langchain.tools import tool
 
-from bank_sales_agent.infrastructure.agent.tools.registry import ToolRegistry
+from app.infrastructure.agent.tools.registry import ToolRegistry
 
 
 @tool

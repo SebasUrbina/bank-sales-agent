@@ -1,7 +1,7 @@
 from langgraph.checkpoint.memory import InMemorySaver
 
-from bank_sales_agent.infrastructure.agent.checkpointer import build_checkpointer
-from bank_sales_agent.infrastructure.config.settings import (
+from app.infrastructure.agent.checkpointer import build_checkpointer
+from app.settings import (
     AppEnvironment,
     MongoSettings,
 )

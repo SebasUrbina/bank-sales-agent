@@ -1,44 +1,13 @@
 # Arquitectura
 
-```text
-Apps Script / REST
-       |
-       v
-infrastructure/api -- resuelve identidad desde directorio
-       |
-       v
-infrastructure/agent -- create_agent + middleware + adaptadores MCP
-       |
-       v
-FastMCP Client -- Streamable HTTP autenticado
-       |
-       v
-mcp-server/ -- FastMCP externo: tools/list y tools/call perfilados por rol
-       |
-       v
-ScopedSqlWarehouseClient -- SQL parametrizado con alcance por filas
-```
+Los diagramas de arquitectura y de secuencia están en la sección
+[Arquitectura del README](../README.md#arquitectura).
 
 ## Flujo asíncrono de Google Chat
 
-```text
-interaction event
-      |
-      v
-FastAPI -- BackgroundTasks.add_task(...) -- respuesta inmediata 202 Accepted
-                    |
-                    v
-          Background worker API
-                   |
-                   v
-              AgentRunner
-                   |
-                   v
-     GoogleChatPublisher + renderer
-                   |
-                   v
-          Google Chat messages.create
-```
+FastAPI responde `202 Accepted` y delega la ejecución en `BackgroundTasks`. Durante la ejecución,
+`GoogleChatCardsMiddleware` publica las `cardsV2` de cada tool apenas termina; al final,
+`GoogleChatPublisher` publica el texto de la respuesta en el mismo hilo.
 
 `BackgroundTasks` es deliberadamente una implementación simple y best effort: una tarea puede
 perderse si el proceso termina después del acuse. El port `AgentRunner` permite introducir
@@ -55,21 +24,22 @@ posteriormente una cola durable sin modificar el agente.
    usuario, pero la tool valida capability y el SQL siempre aplica autorización por filas.
    El catálogo y la política de visibilidad viven exclusivamente en `mcp-server/`. El agente
    adapta las tools anunciadas por `tools/list` a objetos `BaseTool` de LangChain.
-4. **Los resultados estructurados son neutrales al canal.** Cada tool usa
-   `response_format="content_and_artifact"`: el contenido alimenta al modelo y el artifact queda en
-   el `ToolMessage`. El servidor MCP serializa `context` y `artifact` por separado; el adaptador
-   reconstruye el artefacto y el renderer de Google Chat lo convierte a
-   objetos `GoogleChatCardV2`. Las dataclasses usan `build()` únicamente en el borde para producir
-   el JSON `cardsV2` esperado por Google.
+4. **El MCP construye las cards; el agente sólo las publica.** Cada tool devuelve un `ToolResult`
+   con `content` (texto para el modelo) y `structuredContent` (`{"cardsV2": [...]}`), y declara un
+   `outputSchema` que el cliente MCP valida. El adaptador LangChain usa
+   `response_format="content_and_artifact"`: el texto alimenta al modelo y `structuredContent` queda
+   como artifact del `ToolMessage`. `GoogleChatCardsMiddleware` detecta `cardsV2` de forma genérica
+   y las publica con autenticación de app. Ver [ADR 0003](adr/0003-mcp-cards-v2-structured-content.md).
 5. **El lifespan posee los recursos.** En producción crea una conexión/pool Databricks al iniciar y
    lo cierra al apagar. También crea y cierra el checkpointer correspondiente al ambiente. Nada
    abre conexiones SQL por invocación ni usa singletons implícitos. Cada invocación sí abre una
    sesión MCP aislada y la cierra al terminar; en HTTP el SQL pertenece al servidor de tools.
 6. **LangChain recibe el hilo canónico sin transformaciones.** El `thread_name` normalizado por Apps
    Script se utiliza como `thread_id` y también para publicar en el hilo original de Google Chat.
-7. **Google Chat recibe una sola respuesta final.** El endpoint acusa recibo antes de 30 segundos;
-   el background task espera `ainvoke`, reúne texto y artifacts, renderiza una sola respuesta y la
-   publica con `requestId` idempotente en el `thread.name` original.
+7. **Las cards llegan cuando termina la tool y el texto al final.** El endpoint acusa recibo antes
+   de 30 segundos. Cada card se publica con un `requestId` derivado de `request_id` y
+   `tool_call_id`; el texto final usa el `request_id` de la invocación. Ambos van al `thread.name`
+   original.
 8. **Los errores de tools son observaciones seguras.** `DomainError` define un `code` y si el modelo
    puede reintentar. El middleware devuelve un `ToolMessage(status="error")` en JSON. Los errores
    inesperados se registran con detalle, pero el modelo solo recibe un mensaje genérico.
@@ -88,11 +58,13 @@ Por ejemplo, `next_best_action`:
 2. Crear una operación en `mcp-server/bank_sales_mcp/tools/` con SQL fijo y mapper.
 3. Consultar exclusivamente mediante `ToolContext.sql_client`.
 4. Mantener email, rol, SQL, tablas y credenciales fuera de los argumentos del modelo.
-5. Producir contenido JSON y, si corresponde, un artifact neutral condicionado por `render`.
+5. Devolver un `ToolOutcome` con el JSON para el modelo y, si `render=true`, la card construida
+   con los modelos de `bank_sales_mcp/cards.py`.
 6. Agregar su `AgentToolSpec` al catálogo MCP, capability a `ROLE_CAPABILITIES` del servidor y
-   endpoint a `mcp-server/bank_sales_mcp/server.py:build_mcp_server`. El agente adapta dinámicamente
-   el schema y descripción de `tools/list`; no necesita registro ni permisos locales.
-7. Probar política, selección por rol, alcance, query, artifact y contrato del renderer.
+   endpoint a `mcp-server/bank_sales_mcp/server.py:build_mcp_server` con
+   `output_schema=CARDS_V2_OUTPUT_SCHEMA`. El agente adapta dinámicamente el schema y descripción de
+   `tools/list` y publica sus cards; no necesita registro, renderer ni permisos locales.
+7. Probar política, selección por rol, alcance, query y el `structuredContent` de la card.
 
 ## Evolución sugerida
 
@@ -119,20 +91,19 @@ La identidad HTTP viaja como un bearer token firmado cuyo subject es el email; e
 nuevamente en el directorio del servidor. La validación de identidad del ingreso REST sigue siendo
 un requisito independiente para producción.
 
-El contrato `ToolResponse` transporta contexto y un artefacto neutral opcional. La respuesta sólo
-incluye artefacto cuando `render=true`. El adaptador valida el JSON y reconstruye la dataclass,
-preservando `Decimal` y tuplas. El modelo recibe el contenido y el publisher transforma únicamente
-los artefactos del turno actual a `cardsV2`, con un máximo de tres tarjetas.
+El `structuredContent` de cada tool sólo trae cards cuando `render=true`; si no, `cardsV2` es una
+lista vacía. Las cards se publican al terminar cada tool, por lo que nunca se republican cards de
+turnos anteriores guardados en el checkpoint.
 
 ## Deployments independientes
 
-- `src/bank_sales_agent/`: API, LangChain, cliente HTTP MCP y publicación Google Chat.
-- `mcp-server/`: servicio FastMCP con pyproject, lockfile, Dockerfile y entorno propios; SQL y
-  autorización viven aquí. No importa el agente ni LangChain.
-- `packages/bank-sales-contracts/`: paquete pequeño con identidad, modelos y contrato de resultados; sin permisos.
+- `app/`: API, LangChain, cliente HTTP MCP y publicación Google Chat.
+- `mcp-server/`: servicio FastMCP con pyproject, lockfile, Dockerfile y entorno propios; SQL,
+  autorización y construcción de cards viven aquí. No importa el agente ni LangChain.
+- `packages/bank-sales-contracts/`: paquete pequeño con identidad y modelos; sin permisos.
 
 El paquete del servidor sólo se instala en el grupo de desarrollo del agente para las pruebas HTTP.
-La imagen del servidor copia su servicio y los contratos; no copia `src/`. El agente siempre se
+La imagen del servidor copia su servicio y los contratos; no copia `app/`. El agente siempre se
 conecta al endpoint externo configurado en `MCP__URL`; se elimina el modo MCP en memoria.
 
 La API no compara el catálogo remoto con expectativas por rol. El MCP es la única autoridad sobre

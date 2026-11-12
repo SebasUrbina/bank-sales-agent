@@ -28,6 +28,9 @@ canal y se reconstruye desde un discriminador `kind`, conservando tipos de domin
 alimenta el modelo y el artefacto alimenta el renderer de Google Chat, que produce `cardsV2`.
 El publicador usa sólo el turno actual y limita las tarjetas a tres.
 
+> Este párrafo fue reemplazado por [ADR 0003](0003-mcp-cards-v2-structured-content.md): el MCP
+> construye `cardsV2` en `structuredContent` y un middleware del agente las publica.
+
 ## Consecuencias
 
 - El agente descubre las tools autorizadas por `tools/list`; no tiene catálogo ni permisos locales.

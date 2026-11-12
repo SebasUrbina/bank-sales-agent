@@ -1,5 +1,5 @@
-from bank_sales_agent.application.agent.instructions import build_agent_instructions
-from bank_sales_agent.domain.models import Principal, Role
+from app.application.agent.instructions import build_agent_instructions
+from app.domain.models import Principal, Role
 
 
 def test_instructions_delegate_authorization_to_mcp() -> None:

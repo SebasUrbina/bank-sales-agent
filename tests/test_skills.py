@@ -2,8 +2,8 @@ from pathlib import Path
 
 import pytest
 
-from bank_sales_agent.domain.errors import InvalidInputError
-from bank_sales_agent.infrastructure.skills.filesystem import FileSkillProvider
+from app.domain.errors import InvalidInputError
+from app.infrastructure.skills.filesystem import FileSkillProvider
 
 
 def write_skill(root: Path, name: str = "meeting", body: str = "SECRET_INSTRUCTIONS") -> Path:

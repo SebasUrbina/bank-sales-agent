@@ -14,6 +14,8 @@ from bank_sales_mcp.tools.customer_360 import CUSTOMER_360_SQL
 from bank_sales_mcp.tools.customer_portfolio import (
     LIST_PRIORITIZED_SQL,
 )
+from bank_sales_mcp.tools.maturities import UPCOMING_MATURITIES_SQL
+from bank_sales_mcp.tools.product_offers import CUSTOMER_OFFERS_SQL
 
 
 class CapturingSqlClient:
@@ -85,7 +87,12 @@ async def test_mock_query_applies_same_portfolio_scope(
 
 
 def test_every_tool_query_requires_trusted_scope_parameters() -> None:
-    for statement in (CUSTOMER_360_SQL, LIST_PRIORITIZED_SQL):
+    for statement in (
+        CUSTOMER_360_SQL,
+        LIST_PRIORITIZED_SQL,
+        CUSTOMER_OFFERS_SQL,
+        UPCOMING_MATURITIES_SQL,
+    ):
         assert ":requester_email" in statement
         assert ":requester_role" in statement
         assert "gold.commercial_hierarchy" in statement

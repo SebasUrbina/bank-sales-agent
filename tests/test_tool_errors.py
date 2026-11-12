@@ -1,11 +1,11 @@
 import json
 
-from bank_sales_agent.domain.errors import (
+from app.domain.errors import (
     CustomerNotFoundError,
     ForbiddenError,
     InvalidInputError,
 )
-from bank_sales_agent.infrastructure.agent.middleware import tool_error_message
+from app.infrastructure.agent.middleware import tool_error_message
 
 
 def test_domain_error_taxonomy_is_safe_and_machine_readable() -> None:

@@ -1,7 +1,7 @@
 [project]
 name = "bank-sales-contracts"
-version = "0.2.0"
-description = "Identidad, modelos y contrato JSON compartidos por el agente y servidor MCP"
+version = "0.3.0"
+description = "Identidad y modelos compartidos por el agente y el servidor MCP"
 requires-python = ">=3.12"
 dependencies = ["pydantic>=2.10,<3"]
 

@@ -1,4 +1,5 @@
 from collections.abc import Mapping, Sequence
+from datetime import date, timedelta
 from typing import Any
 
 from bank_sales_contracts.models import Principal, Role
@@ -79,6 +80,66 @@ PRIORITIES: tuple[dict[str, Any], ...] = (
 )
 
 
+_TODAY = date.today()
+
+OFFERS: tuple[dict[str, Any], ...] = (
+    {
+        "rut": "11111111-1",
+        "executive_email": EXECUTIVE_ONE,
+        "full_name": "Ana Perez",
+        "product_name": "Crédito de consumo",
+        "amount": 8_000_000,
+        "rate": 0.0129,
+        "expires_on": (_TODAY + timedelta(days=20)).isoformat(),
+    },
+    {
+        "rut": "11111111-1",
+        "executive_email": EXECUTIVE_ONE,
+        "full_name": "Ana Perez",
+        "product_name": "Aumento de cupo tarjeta",
+        "amount": 2_500_000,
+        "rate": 0.0185,
+        "expires_on": (_TODAY + timedelta(days=45)).isoformat(),
+    },
+    {
+        "rut": "22222222-2",
+        "executive_email": EXECUTIVE_TWO,
+        "full_name": "Luis Soto",
+        "product_name": "Línea de crédito",
+        "amount": 5_000_000,
+        "rate": 0.0150,
+        "expires_on": (_TODAY + timedelta(days=10)).isoformat(),
+    },
+)
+
+MATURITIES: tuple[dict[str, Any], ...] = (
+    {
+        "rut": "11111111-1",
+        "executive_email": EXECUTIVE_ONE,
+        "full_name": "Ana Perez",
+        "product_name": "Depósito a plazo",
+        "amount": 15_000_000,
+        "days_to_maturity": 5,
+    },
+    {
+        "rut": "22222222-2",
+        "executive_email": EXECUTIVE_TWO,
+        "full_name": "Luis Soto",
+        "product_name": "Depósito a plazo",
+        "amount": 40_000_000,
+        "days_to_maturity": 12,
+    },
+    {
+        "rut": "33333333-3",
+        "executive_email": EXECUTIVE_ONE,
+        "full_name": "Marta Diaz",
+        "product_name": "Crédito comercial",
+        "amount": 9_000_000,
+        "days_to_maturity": 60,
+    },
+)
+
+
 def _can_access(parameters: Mapping[str, Any], executive_email: str) -> bool:
     requester_email = str(parameters["requester_email"])
     role = Role(str(parameters["requester_role"]))
@@ -127,6 +188,27 @@ class MockSqlWarehouseClient:
                 rows = [row for row in rows if row["segment"] == segment]
             if min_priority is not None:
                 rows = [row for row in rows if float(row["priority_score"]) >= float(min_priority)]
+            return rows[: int(parameters["limit"])]
+
+        if "FROM gold.preapproved_offers o" in statement:
+            rut = str(parameters["rut"])
+            return [
+                row
+                for row in OFFERS
+                if row["rut"] == rut and _can_access(parameters, str(row["executive_email"]))
+            ]
+
+        if "FROM gold.product_maturities m" in statement:
+            days = int(parameters["days"])
+            rows = [
+                {
+                    **row,
+                    "maturity_date": (_TODAY + timedelta(days=row["days_to_maturity"])).isoformat(),
+                }
+                for row in MATURITIES
+                if row["days_to_maturity"] <= days
+                and _can_access(parameters, str(row["executive_email"]))
+            ]
             return rows[: int(parameters["limit"])]
 
         raise ValueError("Query no soportada por MockSqlWarehouseClient")

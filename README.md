@@ -1,35 +1,140 @@
 # Bank Sales Agent
 
 Mockup ejecutable de un agente para ejecutivos bancarios, construido con FastAPI, LangChain
-`create_agent`, FastMCP y Clean Architecture. Incluye Vista 360, listado priorizado, roles, alcance por
-cartera, jerarquía de líderes, cards de Google Chat y un adaptador Databricks.
+`create_agent`, FastMCP y Clean Architecture. Incluye Vista 360, listado priorizado, ofertas
+preaprobadas, vencimientos, roles, alcance por cartera, jerarquía de líderes, cards de Google Chat y
+un adaptador Databricks.
 
 Apps Script normaliza los eventos de Google Chat y llama a FastAPI, que responde inmediatamente.
-El agente se ejecuta mediante `BackgroundTasks` y al terminar publica una única respuesta con texto
-y cards. El modo local usa clientes mock; `GOOGLE_CHAT__ENABLED=true` activa ADC/Workload Identity.
+El agente se ejecuta mediante `BackgroundTasks`. Cuando una tool MCP devuelve `cardsV2` en su
+`structuredContent`, un middleware las publica en el hilo apenas termina la tool; al final se
+publica el texto de la respuesta. El modo local usa clientes mock; `GOOGLE_CHAT__ENABLED=true`
+activa ADC/Workload Identity.
+
+## Arquitectura
+
+```mermaid
+flowchart TB
+    user(["Ejecutivo"])
+
+    subgraph workspace["Google Workspace"]
+        direction LR
+        chat["Google Chat"]
+        apps["Apps Script"]
+        chatApi["Google Chat API<br/>messages.create"]
+    end
+
+    subgraph agent["Bank Sales Agent · app/"]
+        api["FastAPI + BackgroundTasks<br/>infrastructure/api"]
+        runner["LangChainAgentRunner<br/>grafo create_agent"]
+        subgraph mw["Middleware de tool calls"]
+            direction LR
+            errors["safe_tool_errors"] --> cardsMw["GoogleChatCardsMiddleware<br/>detecta cardsV2"] --> caps["DynamicCapabilitiesMiddleware<br/>tools/list y skills"]
+        end
+        adapter["Adaptador MCP<br/>infrastructure/mcp"]
+        publisher["GoogleChatPublisher<br/>texto final"]
+        settings["app/settings.py<br/>pydantic-settings"]
+    end
+
+    subgraph mcp["mcp-server · FastMCP"]
+        auth["JWTVerifier"] --> roleMw["RoleToolMiddleware<br/>filtra y autoriza por rol"]
+        roleMw --> tools["customer_360 · list_prioritized_customers<br/>customer_product_offers · upcoming_maturities"]
+        tools --> cardsBuilder["cards.py<br/>ToolResult: content + structuredContent.cardsV2"]
+        tools --> sql["ScopedSqlWarehouseClient"]
+    end
+
+    llm["LLM Gateway APIM"]
+    mongo[("MongoDB<br/>checkpoints")]
+    skills[("skills/<br/>SKILL.md")]
+    dbx[("Databricks<br/>SQL Warehouse")]
+
+    user --> chat --> apps -->|"POST /v1/agent/invoke"| api
+    settings -.-> api
+    api --> runner
+    runner <--> llm
+    runner <--> mongo
+    runner --> mw
+    caps --> skills
+    caps --> adapter -->|"Streamable HTTP + JWT"| auth
+    sql --> dbx
+    cardsMw -->|"cardsV2 · auth de app"| chatApi
+    runner --> publisher -->|"texto · OAuth usuario"| chatApi
+    chatApi --> chat
+```
+
+### Secuencia de una solicitud con card
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor U as Ejecutivo
+    participant GC as Google Chat
+    participant AS as Apps Script
+    participant API as FastAPI
+    participant R as Runner y grafo LangChain
+    participant LLM as LLM Gateway
+    participant MW as GoogleChatCardsMiddleware
+    participant MCP as mcp-server FastMCP
+    participant DB as Databricks
+    participant GAPI as Google Chat API
+
+    U->>GC: Mensaje en el hilo
+    GC->>AS: Evento de interacción
+    AS->>API: POST /v1/agent/invoke
+    API->>API: ResolvePrincipal por email
+    API-->>AS: 202 Accepted
+    API->>R: BackgroundTasks ejecuta la invocación
+    R->>MCP: Sesión con JWT sub=email y tools/list
+    MCP-->>R: Tools visibles para el rol con inputSchema y outputSchema cardsV2
+    loop Hasta obtener la respuesta final
+        R->>LLM: Mensajes, tools y skills
+        LLM-->>R: tool_call customer_product_offers render=true
+        R->>MW: awrap_tool_call
+        MW->>MCP: tools/call
+        MCP->>MCP: Reautoriza la tool por rol
+        MCP->>DB: SQL parametrizado con alcance por cartera
+        DB-->>MCP: Filas autorizadas
+        MCP-->>MW: CallToolResult con content TextContent y structuredContent.cardsV2
+        alt structuredContent trae cardsV2
+            MW->>GAPI: messages.create con cardsV2 y autenticación de app
+            GAPI-->>GC: Card en el hilo
+        end
+        MW-->>R: ToolMessage con el texto para el modelo y el artifact
+    end
+    LLM-->>R: Respuesta final
+    R-->>API: AgentResult
+    API->>GAPI: messages.create con texto y OAuth del usuario
+    GAPI-->>GC: Respuesta final en el hilo
+```
+
+El modelo sólo recibe el `content` textual de cada tool. Las `cardsV2` viajan en
+`structuredContent`, quedan como `ToolMessage.artifact` y nunca se agregan a los mensajes del LLM.
 
 ## Estructura
 
 ```text
-src/bank_sales_agent/
+app/
+├── settings.py             # pydantic-settings: único punto de lectura del environment
 ├── domain/                 # entidades, roles, capacidades y reglas puras
 ├── application/
 │   ├── agent/              # instrucciones conversacionales
 │   ├── ports.py            # contratos requeridos por el negocio
 │   └── use_cases/          # sólo orquestación de negocio real, no wrappers de queries
 └── infrastructure/
-    ├── agent/              # runtime y registry de tools MCP
+    ├── agent/              # runtime, middleware del grafo y registry de tools MCP
     ├── api/                # factory, rutas, schemas y composition root en lifespan
-    ├── config/             # settings y secretos tipados
-    ├── google_chat/        # renderer de artifacts a cardsV2
+    ├── google_chat/        # cliente, publisher y middleware que publica cardsV2
     ├── mcp/                # cliente HTTP y adaptadores de tools externas
     ├── skills/             # provider SKILL.md y lectura progresiva de recursos
     └── mock/               # datos locales reemplazables
 ```
 
-`mcp-server/` contiene el servicio FastMCP desplegable de forma independiente.
-`packages/bank-sales-contracts/` contiene identidad, modelos y contratos de respuestas compartidos.
-Las capacidades, permisos y catálogo autorizado pertenecen exclusivamente al MCP.
+Los imports usan el paquete `app`, por ejemplo `from app.infrastructure.mcp.client import
+McpToolGateway` y `from app.settings import Settings`.
+
+`mcp-server/` contiene el servicio FastMCP desplegable de forma independiente; también construye
+las cards (`bank_sales_mcp/cards.py`). `packages/bank-sales-contracts/` contiene identidad y modelos
+compartidos. Las capacidades, permisos y catálogo autorizado pertenecen exclusivamente al MCP.
 
 La explicación general está en [docs/architecture.md](docs/architecture.md). La discusión y decisión
 sobre la relación tool-query quedó registrada en
@@ -42,7 +147,7 @@ adopción están en [Engineering Practices Roadmap](docs/engineering-practices-r
 ```bash
 cp .env.example .env
 uv sync --group dev
-uv run uvicorn bank_sales_agent.main:app --reload
+uv run uvicorn app.main:app --reload
 ```
 
 ## Desarrollo
@@ -68,7 +173,7 @@ make format
 make check
 ```
 
-Pytest mide branch coverage sobre `bank_sales_agent` y exige un mínimo inicial de 73%. Pre-commit
+Pytest mide branch coverage sobre `app` y exige un mínimo inicial de 73%. Pre-commit
 ejecuta solamente los checks rápidos y autocorregibles de Ruff; la validación completa queda en
 `make check` y debe ejecutarse también en CI.
 
@@ -87,31 +192,33 @@ curl -X POST http://127.0.0.1:8000/v1/agent/invoke \
   }'
 ```
 
-La API responde `202 Accepted`; el procesamiento continúa en `BackgroundTasks` y el resultado se
-publica en `space_name/thread_name`. El token OAuth sólo se usa para esa publicación y no se agrega
-al estado ni a los mensajes de LangChain.
+La API responde `202 Accepted`; el procesamiento continúa en `BackgroundTasks` y la respuesta se
+publica en `space_name/thread_name`. El token OAuth del usuario viaja en `ChatThread` dentro del
+contexto de invocación (no en el checkpoint ni en los mensajes de LangChain) y sólo se usa para
+publicar el texto final.
 
-Cada tool de datos expone `render: bool = false`. El resultado estructurado siempre queda disponible
-para el análisis del modelo; sólo se genera una card cuando el agente decide invocarla con
-`render=true`. El publisher reúne esas cards y las envía junto con la respuesta final.
+Cada tool de datos expone `render: bool = false`. El resultado siempre vuelve al modelo como
+contexto; sólo se incluyen `cardsV2` cuando el agente invoca la tool con `render=true`, y en ese caso
+la card aparece en el hilo antes que la respuesta final.
 
 ## Roles y perfilamiento de tools
 
-| Rol | Valor canónico | Vista 360 | Clientes priorizados | Alcance |
-| --- | --- | --- | --- | --- |
-| Ejecutivo comercial | `commercial` | Sí | Sí | Cartera propia |
-| Ejecutivo inversiones asesor | `investments_advisor` | Sí | Sí | Cartera propia |
-| Ejecutivo inversiones no asesor | `investments_non_advisor` | Sí | Sí | Cartera propia |
-| Ejecutivo integral | `integral` | Sí | Sí | Cartera propia |
-| Ejecutivo centro servicio | `service_center` | Sí | No | Clientes asignados |
-| Gerente | `manager` | Sí | Sí | Equipo vigente en jerarquía |
-| Admin | `admin` | Sí | Sí | Global |
+| Rol | Valor canónico | Vista 360 | Priorizados | Vencimientos | Ofertas | Alcance |
+| --- | --- | --- | --- | --- | --- | --- |
+| Ejecutivo comercial | `commercial` | Sí | Sí | Sí | Sí | Cartera propia |
+| Ejecutivo inversiones asesor | `investments_advisor` | Sí | Sí | Sí | Sí | Cartera propia |
+| Ejecutivo inversiones no asesor | `investments_non_advisor` | Sí | Sí | Sí | No | Cartera propia |
+| Ejecutivo integral | `integral` | Sí | Sí | Sí | Sí | Cartera propia |
+| Ejecutivo centro servicio | `service_center` | Sí | No | No | No | Clientes asignados |
+| Gerente | `manager` | Sí | Sí | Sí | Sí | Equipo vigente en jerarquía |
+| Admin | `admin` | Sí | Sí | Sí | Sí | Global |
 
 Esta matriz es una política inicial conservadora: centro de servicio no recibe priorización comercial
-ni alcance global. Ambos perfiles de inversiones pueden consultar las mismas tools actuales, que no
-realizan asesoría ni transacciones. Una futura tool de asesoría necesita su propia capability y
-autorización en el MCP. Los permisos
-se mantienen en `mcp-server/bank_sales_mcp/policies.py`; agregar roles no concede acceso a otras carteras.
+ni alcance global, y el perfil de inversiones no asesor no recibe ofertas preaprobadas porque
+ofrecer productos se acerca a una recomendación. Las tools actuales no realizan asesoría ni
+transacciones. Una futura tool de asesoría necesita su propia capability y autorización en el MCP.
+Los permisos se mantienen en `mcp-server/bank_sales_mcp/policies.py`; agregar roles no concede
+acceso a otras carteras.
 
 `Role` acepta los nombres en español (normalizando espacios y mayúsculas) y conserva los valores
 anteriores `investments` y `leader` como alias de lectura. Al serializar usa los valores canónicos.
@@ -151,7 +258,7 @@ uv run bank-sales-mcp
 
 ```bash
 # Terminal 2, desde la raíz
-uv run uvicorn bank_sales_agent.main:app --reload
+uv run uvicorn app.main:app --reload
 ```
 
 HTTP usa tokens HS256 de corta duración, con issuer, audience, subject y expiración. El subject es el
@@ -160,23 +267,46 @@ email; el servidor resuelve el rol en su propio directorio y no acepta un rol en
 mock existente. La autenticación MCP protege el salto API→tools; la autenticación OIDC de ingreso a
 la API sigue pendiente para producción. Usar HTTPS cuando se despliega fuera de localhost.
 
-Las respuestas MCP tienen un contrato JSON versionable:
+### Contrato de respuesta: `content` + `structuredContent.cardsV2`
+
+Cada tool devuelve un `ToolResult` de FastMCP con dos partes, siguiendo el `CallToolResult` de MCP:
+
+- `content`: un `TextContent` con el JSON de datos que lee el modelo.
+- `structuredContent`: un objeto `{"cardsV2": [...]}` con el formato de
+  [cards de Google Chat](https://developers.google.com/workspace/chat/api/reference/rest/v1/cards).
+  Es una lista vacía cuando `render=false`.
 
 ```json
 {
-  "context": "{\"full_name\": \"Ana Perez\"}",
-  "artifact": {
-    "kind": "customer_360",
-    "data": {"customer": "<objeto Customer360 completo>"}
+  "content": [{"type": "text", "text": "{\"rut\": \"11111111-1\", \"full_name\": \"Ana Perez\", ...}"}],
+  "structuredContent": {
+    "cardsV2": [
+      {
+        "cardId": "customer-11111111-1",
+        "card": {
+          "header": {"title": "Ana Perez", "subtitle": "RUT 11111111-1"},
+          "sections": [{"widgets": [{"decoratedText": {"topLabel": "Segmento", "text": "Preferente"}}]}]
+        }
+      }
+    ]
   }
 }
 ```
 
-`artifact` es `null` para respuestas sólo de contexto. Con `render=true`, el artefacto tipado viaja por
-`structuredContent`, se reconstruye en `ToolMessage.artifact` y el renderer lo convierte a `cardsV2`.
-El modelo recibe únicamente `context`; el JSON de presentación no se agrega a sus mensajes. Las
-cards siguen siendo neutrales al canal hasta la publicación. Se publican como máximo tres cards del
-turno actual, incluyendo un estado vacío cuando no hay clientes priorizados.
+Las tools declaran `outputSchema` generado desde `CardsV2Output` (Pydantic, alias camelCase) y
+`ToolAnnotations(readOnlyHint=True)`. El `ClientSession` de MCP valida cada `structuredContent`
+contra ese schema, así que una card mal formada falla en el protocolo y no en Google Chat.
+
+En el agente, el adaptador entrega `content` al modelo y guarda `structuredContent` como
+`ToolMessage.artifact`. `GoogleChatCardsMiddleware` intercepta cada tool call, detecta `cardsV2` y
+las publica en el hilo con `messages.create`. La detección es genérica: cualquier tool MCP que
+devuelva `cardsV2` se publica, sin que el agente conozca los modelos de dominio. Detalles:
+
+- Google Chat sólo acepta cards con autenticación de app, por eso este mensaje usa ADC/Workload
+  Identity y no el OAuth del usuario.
+- El `requestId` se deriva de `request_id` y `tool_call_id`, así un reintento no duplica la card.
+- Si la publicación falla, se registra el error y se agrega una nota al `ToolMessage` para que el
+  modelo incluya los datos en texto.
 
 ## Ambientes y memoria conversacional
 
@@ -185,7 +315,8 @@ turno actual, incluyendo un estado vacío cuando no hay clientes priorizados.
 separan en bases `{MONGODB__DATABASE}_{APP_ENV}` para evitar cruces entre ambientes, por ejemplo
 `bank_sales_agent_qa`. El `thread_name` de entrada sigue siendo la llave `thread_id` de LangGraph.
 
-La configuración usa secciones anidadas de `pydantic-settings`. Sólo `Settings` lee el environment;
+La configuración vive en `app/settings.py` y usa secciones anidadas de `pydantic-settings`. Sólo
+`Settings` lee el environment;
 las secciones `api`, `mongodb`, `llm_gateway`, `mcp` y `google_chat` son `BaseModel`. El
 cliente LLM se conecta a un APIM OpenAI-compatible y deriva su endpoint como
 `{LLM_GATEWAY__BASE_URL}/{model_name}/v1`.
@@ -207,11 +338,16 @@ cliente LLM se conecta a un APIM OpenAI-compatible y deriva su endpoint como
   Los ports permiten migrar a una cola durable si ese riesgo deja de ser aceptable.
 
 Los cambios de permisos se despliegan sólo en el MCP. Una tool nueva se descubre automáticamente
-por el agente si mantiene el contrato de respuesta `context`/`artifact`. Cambiar ese contrato o agregar
-un tipo de artefacto requiere coordinar compatibilidad; los permisos no forman parte del paquete
-compartido. El rol conocido por la API es informativo: el MCP resuelve el rol vigente en su directorio.
+por el agente y, si devuelve `cardsV2` en `structuredContent`, sus cards se publican sin cambios en
+el agente. Los permisos no forman parte del paquete compartido. El rol conocido por la API es
+informativo: el MCP resuelve el rol vigente en su directorio.
 
 ## Middleware de tools y skills
+
+El orden del harness define cómo se envuelven las tool calls (el primero es el más externo):
+`role_aware_prompt`, `model_observability`, `safe_tool_errors`, `GoogleChatCardsMiddleware` y
+`DynamicCapabilitiesMiddleware`. Así, los errores de dominio se convierten en `ToolMessage` de error
+antes de llegar al middleware de cards, y éste ve el resultado de la tool ya resuelta.
 
 `DynamicCapabilitiesMiddleware` permite mantener un único grafo `create_agent` durante el proceso:
 

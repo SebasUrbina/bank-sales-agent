@@ -2,14 +2,15 @@ import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
 from decimal import Decimal
-from typing import Annotated, Any
+from typing import Any
 
-from bank_sales_contracts.artifacts import AgentArtifact, Customer360Artifact
 from bank_sales_contracts.errors import CustomerNotFoundError, ForbiddenError
 from bank_sales_contracts.models import Customer360
 
+from bank_sales_mcp.cards import Card, CardHeader, CardWithId, Section, decorated, money
 from bank_sales_mcp.context import ToolContext
 from bank_sales_mcp.policies import Capability, can_use
+from bank_sales_mcp.results import ToolOutcome
 
 CUSTOMER_360_SQL = """
 SELECT
@@ -60,11 +61,29 @@ def map_customer_360(rows: Sequence[Mapping[str, Any]]) -> Customer360 | None:
     )
 
 
+def customer_360_card(customer: Customer360) -> CardWithId:
+    return CardWithId(
+        card_id=f"customer-{customer.rut}",
+        card=Card(
+            header=CardHeader(title=customer.full_name, subtitle=f"RUT {customer.rut}"),
+            sections=[
+                Section(
+                    widgets=[
+                        decorated(customer.segment, top="Segmento"),
+                        decorated(money(customer.total_balance), top="Saldo total"),
+                        decorated(", ".join(customer.products), top="Productos"),
+                    ]
+                )
+            ],
+        ),
+    )
+
+
 async def customer_360(
-    rut: Annotated[str, "RUT chileno del cliente, con dígito verificador"],
+    rut: str,
     context: ToolContext,
-    render: Annotated[bool, "True para mostrar este resultado como card en Google Chat"] = False,
-) -> tuple[str, AgentArtifact | None]:
+    render: bool = False,
+) -> ToolOutcome:
     """Obtiene la vista consolidada 360 de un cliente autorizado."""
     principal = context.principal
     if not can_use(principal, Capability.CUSTOMER_360):
@@ -76,5 +95,4 @@ async def customer_360(
         raise CustomerNotFoundError("Cliente no encontrado en el alcance autorizado")
 
     content = json.dumps(asdict(result), ensure_ascii=False, default=str)
-    artifact = Customer360Artifact(result) if render else None
-    return content, artifact
+    return ToolOutcome(content, (customer_360_card(result),) if render else ())

@@ -28,6 +28,16 @@ TOOL_CATALOG: tuple[AgentToolSpec, ...] = (
         Capability.LIST_CUSTOMERS,
         ToolCategory.PORTFOLIO,
     ),
+    AgentToolSpec(
+        "customer_product_offers",
+        Capability.PRODUCT_OFFERS,
+        ToolCategory.OPPORTUNITIES,
+    ),
+    AgentToolSpec(
+        "upcoming_maturities",
+        Capability.PORTFOLIO_MATURITIES,
+        ToolCategory.PORTFOLIO,
+    ),
 )
 
 

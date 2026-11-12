@@ -62,7 +62,7 @@ wheels = [
 
 [[package]]
 name = "bank-sales-contracts"
-version = "0.2.0"
+version = "0.3.0"
 source = { directory = "../packages/bank-sales-contracts" }
 dependencies = [
     { name = "pydantic" },

@@ -67,7 +67,7 @@ específica no cubierta.
 Responsabilidad:
 
 - Tests unitarios y async.
-- Branch coverage sobre `bank_sales_agent`.
+- Branch coverage sobre `app`.
 - Umbral mínimo inicial de 73%, correspondiente a la línea base verificada.
 - Reporte de líneas y branches faltantes.
 

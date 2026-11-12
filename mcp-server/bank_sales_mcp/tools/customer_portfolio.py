@@ -1,18 +1,15 @@
 import json
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict
-from typing import Annotated, Any
+from typing import Any
 
-from bank_sales_contracts.artifacts import (
-    AgentArtifact,
-    PrioritizedCustomersArtifact,
-)
 from bank_sales_contracts.errors import ForbiddenError
 from bank_sales_contracts.models import PrioritizedCustomer, Role
-from pydantic import Field
 
+from bank_sales_mcp.cards import Card, CardHeader, CardWithId, Section, Widget, decorated, paragraph
 from bank_sales_mcp.context import ToolContext
 from bank_sales_mcp.policies import Capability, can_use
+from bank_sales_mcp.results import ToolOutcome
 
 LIST_PRIORITIZED_SQL = """
 SELECT
@@ -64,16 +61,36 @@ def map_prioritized_customers(
     )
 
 
+def prioritized_customers_card(customers: tuple[PrioritizedCustomer, ...]) -> CardWithId:
+    widgets: list[Widget] = [
+        decorated(
+            customer.full_name,
+            top=f"Prioridad {customer.priority_score:.0%}",
+            bottom=customer.reason,
+        )
+        for customer in customers
+    ]
+    return CardWithId(
+        card_id="prioritized-customers",
+        card=Card(
+            header=CardHeader(
+                title="Clientes priorizados", subtitle=f"{len(customers)} resultados"
+            ),
+            sections=[
+                Section(widgets=widgets or [paragraph("Sin clientes en el alcance solicitado")])
+            ],
+        ),
+    )
+
+
 async def list_prioritized_customers(
     context: ToolContext,
-    limit: Annotated[int, Field(ge=1, le=100)] = 10,
-    segment: Annotated[str | None, "Segmento comercial opcional"] = None,
-    min_priority: Annotated[float | None, Field(ge=0, le=1)] = None,
-    executive_email: Annotated[
-        str | None, "Email del ejecutivo; sólo para líderes o admins"
-    ] = None,
-    render: Annotated[bool, "True para mostrar este resultado como card en Google Chat"] = False,
-) -> tuple[str, AgentArtifact | None]:
+    limit: int = 10,
+    segment: str | None = None,
+    min_priority: float | None = None,
+    executive_email: str | None = None,
+    render: bool = False,
+) -> ToolOutcome:
     """Lista clientes priorizados dentro de la cartera autorizada del usuario."""
     principal = context.principal
     if not can_use(principal, Capability.LIST_CUSTOMERS):
@@ -96,5 +113,4 @@ async def list_prioritized_customers(
     )
     result = map_prioritized_customers(rows)
     content = json.dumps([asdict(item) for item in result], ensure_ascii=False)
-    artifact = PrioritizedCustomersArtifact(result) if render else None
-    return content, artifact
+    return ToolOutcome(content, (prioritized_customers_card(result),) if render else ())

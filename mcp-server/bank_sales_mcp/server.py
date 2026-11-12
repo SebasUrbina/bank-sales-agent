@@ -8,7 +8,6 @@ from typing import Annotated, Any
 
 from bank_sales_contracts.errors import DomainError, ForbiddenError
 from bank_sales_contracts.models import Principal
-from bank_sales_contracts.responses import ToolResponse
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 from fastmcp.server.auth import AuthProvider
@@ -17,8 +16,10 @@ from fastmcp.tools.tool import Tool, ToolResult
 from mcp import types as mt
 from pydantic import Field
 
+from bank_sales_mcp.cards import CARDS_V2_OUTPUT_SCHEMA
 from bank_sales_mcp.catalog import visible_tool_names
 from bank_sales_mcp.context import ToolContext
+from bank_sales_mcp.results import ToolOutcome
 from bank_sales_mcp.sql import (
     ScopedSqlWarehouseClient,
     SqlWarehouseClient,
@@ -27,6 +28,8 @@ from bank_sales_mcp.tools.customer_360 import customer_360
 from bank_sales_mcp.tools.customer_portfolio import (
     list_prioritized_customers,
 )
+from bank_sales_mcp.tools.maturities import upcoming_maturities
+from bank_sales_mcp.tools.product_offers import customer_product_offers
 
 _current_context: ContextVar[ToolContext] = ContextVar("mcp_agent_context")
 PrincipalResolver = Callable[[], Awaitable[Principal]]
@@ -82,12 +85,25 @@ class RoleToolMiddleware(Middleware):
             raise _error(error) from error
 
 
-async def _execute(tool: Any, **arguments: Any) -> ToolResponse:
+async def _execute(tool: Callable[..., Awaitable[ToolOutcome]], **arguments: Any) -> ToolResult:
     try:
-        context, artifact = await tool(context=_current_context.get(), **arguments)
+        outcome = await tool(context=_current_context.get(), **arguments)
     except DomainError as error:
         raise _error(error) from error
-    return ToolResponse.from_result(context, artifact)
+    return outcome.to_tool_result()
+
+
+Render = Annotated[
+    bool,
+    Field(
+        description=(
+            "true para mostrar el resultado como card en Google Chat. Los datos siempre vuelven "
+            "como contexto; usa true sólo si la card aporta valor a la respuesta final."
+        )
+    ),
+]
+Rut = Annotated[str, Field(description="RUT chileno del cliente, con dígito verificador")]
+READ_ONLY = mt.ToolAnnotations(readOnlyHint=True, idempotentHint=True, openWorldHint=False)
 
 
 def build_mcp_server(
@@ -100,19 +116,31 @@ def build_mcp_server(
     server = FastMCP("Bank Sales Tools", auth=auth, lifespan=lifespan, mask_error_details=True)
     server.add_middleware(RoleToolMiddleware(resolve_principal, sql_client))
 
-    @server.tool(name="customer_360")
-    async def customer_view(rut: str, render: bool = False) -> ToolResponse:
+    @server.tool(
+        name="customer_360",
+        output_schema=CARDS_V2_OUTPUT_SCHEMA,
+        annotations=READ_ONLY.model_copy(update={"title": "Vista 360 de cliente"}),
+    )
+    async def customer_view(rut: Rut, render: Render = False) -> ToolResult:
         """Obtiene la vista consolidada 360 de un cliente autorizado."""
         return await _execute(customer_360, rut=rut, render=render)
 
-    @server.tool(name="list_prioritized_customers")
+    @server.tool(
+        name="list_prioritized_customers",
+        output_schema=CARDS_V2_OUTPUT_SCHEMA,
+        annotations=READ_ONLY.model_copy(update={"title": "Clientes priorizados"}),
+    )
     async def portfolio(
-        limit: Annotated[int, Field(ge=1, le=100)] = 10,
-        segment: str | None = None,
-        min_priority: Annotated[float | None, Field(ge=0, le=1)] = None,
-        executive_email: str | None = None,
-        render: bool = False,
-    ) -> ToolResponse:
+        limit: Annotated[int, Field(ge=1, le=100, description="Máximo de clientes")] = 10,
+        segment: Annotated[str | None, Field(description="Segmento comercial opcional")] = None,
+        min_priority: Annotated[
+            float | None, Field(ge=0, le=1, description="Score mínimo entre 0 y 1")
+        ] = None,
+        executive_email: Annotated[
+            str | None, Field(description="Email del ejecutivo; sólo para gerentes o admins")
+        ] = None,
+        render: Render = False,
+    ) -> ToolResult:
         """Lista clientes priorizados dentro de la cartera autorizada del usuario."""
         return await _execute(
             list_prioritized_customers,
@@ -122,5 +150,27 @@ def build_mcp_server(
             executive_email=executive_email,
             render=render,
         )
+
+    @server.tool(
+        name="customer_product_offers",
+        output_schema=CARDS_V2_OUTPUT_SCHEMA,
+        annotations=READ_ONLY.model_copy(update={"title": "Ofertas preaprobadas"}),
+    )
+    async def offers(rut: Rut, render: Render = False) -> ToolResult:
+        """Lista ofertas preaprobadas vigentes de un cliente autorizado."""
+        return await _execute(customer_product_offers, rut=rut, render=render)
+
+    @server.tool(
+        name="upcoming_maturities",
+        output_schema=CARDS_V2_OUTPUT_SCHEMA,
+        annotations=READ_ONLY.model_copy(update={"title": "Vencimientos próximos"}),
+    )
+    async def maturities(
+        days: Annotated[int, Field(ge=1, le=90, description="Horizonte en días")] = 30,
+        limit: Annotated[int, Field(ge=1, le=100, description="Máximo de productos")] = 20,
+        render: Render = False,
+    ) -> ToolResult:
+        """Lista productos de la cartera autorizada que vencen en los próximos días."""
+        return await _execute(upcoming_maturities, days=days, limit=limit, render=render)
 
     return server

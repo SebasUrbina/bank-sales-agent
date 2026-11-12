@@ -7,21 +7,20 @@ import pytest
 from bank_sales_mcp.catalog import visible_tool_names
 from bank_sales_mcp.main import create_server
 from bank_sales_mcp.settings import Settings as ServerSettings
+from conftest import chat_thread
 from fastmcp import Client
 from fastmcp.client.transports import StreamableHttpTransport
-from langchain.messages import AIMessage, HumanMessage, ToolMessage
+from langchain.messages import AIMessage
 from pydantic import ValidationError
 
-from bank_sales_agent.application.dto import AgentResult
-from bank_sales_agent.domain.errors import CustomerNotFoundError, ForbiddenError
-from bank_sales_agent.domain.models import Principal, Role
-from bank_sales_agent.infrastructure.agent.runner import collect_artifacts
-from bank_sales_agent.infrastructure.config.settings import McpSettings, Settings
-from bank_sales_agent.infrastructure.google_chat.cards import GoogleChatArtifactRenderer
-from bank_sales_agent.infrastructure.mcp.client import McpToolGateway, issue_token
-from bank_sales_agent.infrastructure.mcp.contracts import ToolResponse
-from bank_sales_agent.infrastructure.mcp.tools import build_mcp_tool_registry
-from bank_sales_agent.infrastructure.mock.repositories import EXECUTIVE_ONE
+from app.domain.errors import CustomerNotFoundError, ForbiddenError
+from app.domain.models import Principal, Role
+from app.infrastructure.google_chat.cards import extract_cards_v2
+from app.infrastructure.google_chat.client import MockGoogleChatClient
+from app.infrastructure.mcp.client import McpToolGateway, issue_token
+from app.infrastructure.mcp.tools import build_mcp_tool_registry
+from app.infrastructure.mock.repositories import EXECUTIVE_ONE
+from app.settings import McpSettings, Settings
 
 
 @pytest.mark.parametrize(
@@ -75,6 +74,9 @@ async def test_mcp_filters_catalog_and_protects_call_for_every_role(
             assert not {"role", "principal", "requester_email", "runtime"} & set(
                 tool.inputSchema["properties"]
             )
+            assert tool.outputSchema is not None
+            assert "cardsV2" in tool.outputSchema["properties"]
+            assert tool.annotations is not None and tool.annotations.readOnlyHint
         if role is Role.SERVICE_CENTER:
             result = await client.call_tool("list_prioritized_customers", {}, raise_on_error=False)
             assert result.is_error
@@ -82,7 +84,7 @@ async def test_mcp_filters_catalog_and_protects_call_for_every_role(
 
 
 @pytest.mark.asyncio
-async def test_context_only_and_artifact_round_trip_to_cards_v2(
+async def test_render_controls_cards_v2_in_structured_content(
     http_gateway: McpToolGateway,
 ) -> None:
     principal = Principal(EXECUTIVE_ONE, Role.COMMERCIAL)
@@ -94,11 +96,12 @@ async def test_context_only_and_artifact_round_trip_to_cards_v2(
         assert customer_360.coroutine is not None
         text, artifact = await customer_360.coroutine(rut="11111111-1")
         assert json.loads(text)["full_name"] == "Ana Perez"
-        assert artifact is None
+        assert artifact == {"cardsV2": []}
         text, artifact = await customer_360.coroutine(rut="11111111-1", render=True)
-        assert artifact is not None
-        payload = GoogleChatArtifactRenderer().render(AgentResult(text=text, artifacts=(artifact,)))
-        assert payload.build()["cardsV2"][0]["card"]["header"]["title"] == "Ana Perez"
+        assert "cardsV2" not in text
+        [card] = extract_cards_v2(artifact)
+        assert card["cardId"] == "customer-11111111-1"
+        assert card["card"]["header"]["title"] == "Ana Perez"
         assert list_prioritized_customers.coroutine is not None
         with pytest.raises(ForbiddenError):
             await list_prioritized_customers.coroutine(executive_email="inversiones@bank.test")
@@ -115,14 +118,10 @@ async def test_mcp_validates_limits_and_empty_portfolio_card(http_gateway: McpTo
         )
         assert invalid.is_error
         result = await client.call_tool("list_prioritized_customers", {"render": True})
-        text, artifact = ToolResponse.model_validate(result.structured_content).to_result()
-        assert json.loads(text) == []
-        assert artifact is not None
-        assert (
-            GoogleChatArtifactRenderer()
-            .render(AgentResult(text="Sin clientes", artifacts=(artifact,)))
-            .build()["cardsV2"]
-        )
+        assert json.loads(result.content[0].text) == []
+        [card] = result.structured_content["cardsV2"]
+        widget = card["card"]["sections"][0]["widgets"][0]
+        assert widget == {"textParagraph": {"text": "Sin clientes en el alcance solicitado"}}
 
 
 @pytest.mark.asyncio
@@ -132,8 +131,7 @@ async def test_mcp_sessions_do_not_share_identity(http_gateway: McpToolGateway) 
     async def query(principal: Principal) -> set[str]:
         async with http_gateway.connect(principal) as client:
             result = await client.call_tool("list_prioritized_customers", {})
-            text, _ = ToolResponse.model_validate(result.structured_content).to_result()
-            return {row["executive_email"] for row in json.loads(text)}
+            return {row["executive_email"] for row in json.loads(result.content[0].text)}
 
     results = await asyncio.gather(
         query(Principal(EXECUTIVE_ONE, Role.COMMERCIAL)),
@@ -184,25 +182,15 @@ async def test_http_mcp_uses_signed_identity_and_server_directory() -> None:
                 assert response.status_code == 401
 
 
-def test_previous_turn_artifacts_are_not_republished() -> None:
-    marker = object()
-    messages = [
-        ToolMessage(content="previous", tool_call_id="old", artifact=marker),
-        HumanMessage(content="Nueva pregunta"),
-        AIMessage(content="Nueva respuesta"),
-    ]
-    assert collect_artifacts(messages) == ()
-
-
 @pytest.mark.asyncio
-async def test_agent_runs_tool_calls_through_mcp_and_preserves_artifacts(
-    http_gateway: McpToolGateway,
+async def test_agent_publishes_mcp_cards_and_then_final_text(
+    http_gateway: McpToolGateway, chat_client: MockGoogleChatClient
 ) -> None:
     from langchain_core.language_models.fake_chat_models import FakeMessagesListChatModel
     from langgraph.checkpoint.memory import InMemorySaver
 
-    from bank_sales_agent.application.dto import AgentInvocation
-    from bank_sales_agent.infrastructure.agent.runner import LangChainAgentRunner
+    from app.application.dto import AgentInvocation
+    from app.infrastructure.agent.runner import LangChainAgentRunner
 
     class ScriptedModel(FakeMessagesListChatModel):
         def bind_tools(self, tools: Any, **kwargs: Any) -> "ScriptedModel":
@@ -224,18 +212,19 @@ async def test_agent_runs_tool_calls_through_mcp_and_preserves_artifacts(
             AIMessage(content="Ana tiene un saldo de $24.500.000."),
         ]
     )
-    runner = LangChainAgentRunner(model, InMemorySaver(), http_gateway)
+    runner = LangChainAgentRunner(model, InMemorySaver(), http_gateway, chat_client)
     result = await runner.run(
         AgentInvocation(
             request_id="agent-mcp-test",
             principal=Principal(EXECUTIVE_ONE, Role.COMMERCIAL),
             message="Dame la vista 360 con tarjeta",
-            thread_id="mcp-test-thread",
+            chat=chat_thread("mcp-test-thread"),
         )
     )
     assert result.text == "Ana tiene un saldo de $24.500.000."
-    assert len(result.artifacts) == 1
-    assert GoogleChatArtifactRenderer().render(result).build()["cardsV2"]
+    [sent] = chat_client.sent_messages
+    assert sent["body"]["cardsV2"][0]["card"]["header"]["title"] == "Ana Perez"
+    assert sent["thread_name"] == "spaces/AAAA/threads/mcp-test-thread"
 
 
 @pytest.mark.asyncio
@@ -280,9 +269,9 @@ async def test_new_mcp_tool_is_discovered_with_its_schema_and_description(
     )
 
     @mcp_server.tool(name="new_customer_context")
-    async def new_context(topic: str) -> ToolResponse:
+    async def new_context(topic: str) -> str:
         """Nueva consulta publicada únicamente en el MCP."""
-        return ToolResponse(context=f"Contexto nuevo: {topic}")
+        return f"Contexto nuevo: {topic}"
 
     async with http_gateway.connect(Principal(EXECUTIVE_ONE, Role.COMMERCIAL)) as client:
         registry = await build_mcp_tool_registry(client, "new-tool")
@@ -298,7 +287,7 @@ async def test_new_mcp_tool_is_discovered_with_its_schema_and_description(
             }
         )
         assert message.content == "Contexto nuevo: cartera"
-        assert message.artifact is None
+        assert extract_cards_v2(message.artifact) == []
 
 
 @pytest.mark.asyncio

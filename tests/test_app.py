@@ -1,5 +1,5 @@
-from bank_sales_agent.infrastructure.api.app import create_app
-from bank_sales_agent.infrastructure.config.settings import Settings
+from app.infrastructure.api.app import create_app
+from app.settings import Settings
 
 
 def test_api_settings_configure_fastapi() -> None:

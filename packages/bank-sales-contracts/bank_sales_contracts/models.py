@@ -1,4 +1,5 @@
 from dataclasses import dataclass, field
+from datetime import date
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
@@ -60,3 +61,23 @@ class PrioritizedCustomer:
     full_name: str
     priority_score: float
     reason: str
+
+
+@dataclass(frozen=True)
+class ProductOffer:
+    rut: str
+    full_name: str
+    product: str
+    amount: Decimal
+    rate: float
+    expires_on: date
+
+
+@dataclass(frozen=True)
+class ProductMaturity:
+    rut: str
+    executive_email: str
+    full_name: str
+    product: str
+    amount: Decimal
+    maturity_date: date

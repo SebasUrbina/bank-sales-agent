@@ -1,4 +1,4 @@
-from bank_sales_agent.infrastructure.api.schemas import AgentRequest
+from app.infrastructure.api.schemas import AgentRequest
 
 
 def test_agent_request_accepts_normalized_apps_script_payload() -> None:

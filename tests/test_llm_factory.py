@@ -1,8 +1,8 @@
 import pytest
 from langchain_openai import ChatOpenAI
 
-from bank_sales_agent.infrastructure.config.settings import LlmGatewaySettings
-from bank_sales_agent.infrastructure.llm.factory import build_chat_model
+from app.infrastructure.llm.factory import build_chat_model
+from app.settings import LlmGatewaySettings
 
 
 def test_builds_openai_compatible_model_for_apim() -> None:

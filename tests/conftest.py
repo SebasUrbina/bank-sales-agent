@@ -10,8 +10,19 @@ from bank_sales_mcp.settings import Settings as ServerSettings
 from fastmcp import Client, FastMCP
 from fastmcp.client.transports import StreamableHttpTransport
 
-from bank_sales_agent.infrastructure.config.settings import McpSettings
-from bank_sales_agent.infrastructure.mcp.client import McpToolGateway
+from app.application.dto import ChatThread
+from app.infrastructure.google_chat.client import MockGoogleChatClient
+from app.infrastructure.mcp.client import McpToolGateway
+from app.settings import McpSettings
+
+
+def chat_thread(thread: str = "BBBB") -> ChatThread:
+    return ChatThread("spaces/AAAA", f"spaces/AAAA/threads/{thread}", "user-oauth-token")
+
+
+@pytest.fixture
+def chat_client() -> MockGoogleChatClient:
+    return MockGoogleChatClient()
 
 
 @pytest.fixture
@@ -35,7 +46,7 @@ async def http_gateway(
             **kwargs,
         )
 
-    monkeypatch.setattr("bank_sales_agent.infrastructure.mcp.client.Client", remote_client)
+    monkeypatch.setattr("app.infrastructure.mcp.client.Client", remote_client)
     started = asyncio.Event()
     stop = asyncio.Event()
 

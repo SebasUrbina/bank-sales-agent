@@ -1,8 +1,8 @@
 import pytest
 
-from bank_sales_agent.application.use_cases.resolve_principal import ResolvePrincipal
-from bank_sales_agent.domain.errors import ForbiddenError
-from bank_sales_agent.infrastructure.mock.repositories import MockEmployeeDirectoryRepository
+from app.application.use_cases.resolve_principal import ResolvePrincipal
+from app.domain.errors import ForbiddenError
+from app.infrastructure.mock.repositories import MockEmployeeDirectoryRepository
 
 
 @pytest.mark.asyncio
